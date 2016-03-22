@@ -128,8 +128,8 @@ namespace stackless_coroutine {
 			using type = typename next::type;
 			using tuple_type = typename next::tuple_type;
 		};
-		template<class... A,class  CurrentValue,class ReturnTuple, std::size_t Pos,bool Last>
-		struct calculate_values_type<async_result<A...>,CurrentValue,ReturnTuple,Pos,Last> {
+		template<class... A,class  CurrentValue,class ReturnTuple, std::size_t Pos>
+		struct calculate_values_type<async_result<A...>,CurrentValue,ReturnTuple,Pos,false> {
 			using return_type = decltype(std::get<Pos>(std::declval<lambda_tuple_t>())(std::declval<async_result_t<A...>>(),detail::ldeclval<coroutine_info>(), detail::ldeclval<CurrentValue>()));
 			using current_type = typename process_return_type<return_type, CurrentValue>::type;
 			using current_tuple_type = append_tuple_t<ReturnTuple, return_type>;
@@ -144,6 +144,14 @@ namespace stackless_coroutine {
 			using type = typename process_return_type<return_type, CurrentValue>::type;
 			using tuple_type = append_tuple_t<ReturnTuple, return_type>;
 		};
+		template<class... A, class  CurrentValue, class ReturnTuple, std::size_t Pos>
+		struct calculate_values_type<async_result<A...>, CurrentValue, ReturnTuple, Pos, true> {
+			using return_type = decltype(std::get<Pos>(std::declval<lambda_tuple_t>())(std::declval<async_result_t<A...>>(), detail::ldeclval<coroutine_info>(), detail::ldeclval<CurrentValue>()));
+			using type = typename process_return_type<return_type, CurrentValue>::type;
+			using tuple_type = append_tuple_t<ReturnTuple, return_type>;
+
+		};
+
 
 
 		using cv_t = calculate_values_type<void, values<void, void>, std::tuple<>, 0,0 == last_tuple_position>;
@@ -192,12 +200,26 @@ int main() {
 				int z;
 			};
 			return val{ 3 };
+		},
+		[](auto& a, auto& b) {
+			return stackless_coroutine::async_result<int>();
+
+		},
+		[](int v,auto& a, auto& b) {
+			return stackless_coroutine::async_result<int,int>();
+
+		},
+		[](std::tuple<int,int> v,auto& a, auto& b) {
+			
+
 		}
+
+
 		);
 
 	decltype(ci)::value_type vt;
 	vt.x = 5;
-	vt.z - 2;
+	vt.z = 2;
 
 	
 	std::cout << typeid(vt).name() << std::endl;
