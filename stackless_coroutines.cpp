@@ -14,7 +14,8 @@ namespace stackless_coroutine {
 		_return,
 		_break,
 		_continue,
-		_done
+		_done,
+		_exception
 	};
 
 	namespace detail {
@@ -95,64 +96,29 @@ namespace stackless_coroutine {
 		operation do_continue() { return operation::_continue };
 	
 	};
-	template<class CI,class CP>
-	struct async_coroutine_context:base_coroutine_context<CI> {
-		using base_coroutine_context<CI>::base_coroutine_context;
-		template<class... T>
-		void operator()(T&&... t) {
-			CP::process(*this->ci_, this->ci_->value_, std::forward<T>(t)...);
-		}
-		template<class... T>
-		async_result do_async(){ return async_result{}; }
-	
+	//template<class CI,class CP>
+	//struct async_coroutine_context:base_coroutine_context<CI> {
+	//	using base_coroutine_context<CI>::base_coroutine_context;
+	//	template<class... T>
+	//	void operator()(T&&... t) {
+	//		CP::process(*this->ci_, this->ci_->value_, std::forward<T>(t)...);
+	//	}
+	//	template<class... T>
+	//	async_result do_async(){ return async_result{}; }
+	//
 
 
-	};
+	//};
 
 	template<class CI, class ReturnValue, std::size_t Pos, std::size_t Size,bool Loop>
 	struct coroutine_processor;
 
-	struct dummy_coroutine_processor {
-
 	
-		template<class CI, class value_type,class... T>
-		static operation process(CI& ci, value_type& value, T&&... results) {
-			return operation::_done;
-		}
-
-	};
-
-	
-	template<class CI, class ReturnValue, std::size_t Pos, std::size_t Size,bool Loop,bool Last = Pos == Size - 1>
-	struct coroutine_next_processor_helper {
-		using value_type = typename CI::value_type;
-		using return_tuple = typename CI::return_tuple;
-
-		using processor = coroutine_processor<CI, std::tuple_element_t<Pos + 1, return_tuple>, Pos + 1, Size,Loop>;
-
-		
-		
-	};
-
-	template<class CI, class ReturnValue,std::size_t Pos,  std::size_t Size, bool Loop>
-	struct coroutine_next_processor_helper<CI,ReturnValue,Pos, Size,Loop,true> {
-
-		using processor = dummy_coroutine_processor;
-
-		
-		
-	};
-
 
 
 	template<class CI,class CP,bool Async>
 	struct async_coroutine_context_helper {
 		using type = base_coroutine_context<CI>;
-
-	};
-	template<class CI,class CP>
-	struct async_coroutine_context_helper<CI,CP,true> {
-		using type = async_coroutine_context<CI, CP>;
 
 	};
 
@@ -185,24 +151,25 @@ namespace stackless_coroutine {
 
 		using self = coroutine_processor;
 	
-		static operation do_next(CI& ci, value_type& value, std::integral_constant<std::size_t,Size>) {
+		template<class Finished>
+		static operation do_next(CI& ci, value_type& value,Finished& , std::integral_constant<std::size_t,Size>) {
 			return operation::_done;
 		}
-		template<std::size_t P>
-		static operation do_next(CI& ci, value_type& value, std::integral_constant<std::size_t,P>) {
+		template<class Finished,std::size_t P>
+		static operation do_next(CI& ci, value_type& value,Finished& f, std::integral_constant<std::size_t,P>) {
 
 			dummy_coroutine_context dc;
 			using next_return = decltype(std::get<P>(ci.tuple_)(dc, ci.value_));
 
-			return coroutine_processor<CI, next_return, P, Size,Loop>::process(ci, value);
+			return coroutine_processor<CI, next_return, P, Size,Loop>::process(ci, value,f);
 		}
 	
-		template<class... T>
-		static operation process(CI& ci, value_type& value, T&&... results) {
+		template<class Finished,class... T>
+		static operation process(CI& ci, value_type& value,Finished& f, T&&... results) {
 
 			coroutine_context<CI, self, Loop, false> ctx{ ci };
 			std::get<Pos>(ci.tuple_)(ctx, value,std::forward<T>(results)...);
-			return do_next(ci, value, std::integral_constant<std::size_t,Pos + 1>{});
+			return do_next(ci, value,f, std::integral_constant<std::size_t,Pos + 1>{});
 		}
 
 	};
@@ -213,20 +180,21 @@ namespace stackless_coroutine {
 	
 		using self = coroutine_processor;
 	
-		static operation do_next(CI& ci, value_type& value, std::integral_constant<std::size_t,Size>) {
+		template<class Finished>
+		static operation do_next(CI& ci, value_type& value,Finished& f, std::integral_constant<std::size_t,Size>) {
 			return operation::_done;
 		}
-		template<std::size_t P>
-		static operation do_next(CI& ci, value_type& value, std::integral_constant<std::size_t,P>) {
+		template<class Finished,std::size_t P>
+		static operation do_next(CI& ci, value_type& value,Finished& f, std::integral_constant<std::size_t,P>) {
 			dummy_coroutine_context dc;
 			using next_return = decltype(std::get<P>(ci.tuple_)(dc, ci.value_));
 
 
-			return coroutine_processor<CI, next_return, Pos + 1, Size,Loop>::process(ci, value);
+			return coroutine_processor<CI, next_return, Pos + 1, Size,Loop>::process(ci, value,f);
 		}
 	
-		template<class... T>
-		static operation process(CI& ci, value_type& value, T&&... results) {
+		template<class Finished,class... T>
+		static operation process(CI& ci, value_type& value,Finished& f, T&&... results) {
 
 			coroutine_context<CI, self, Loop, false> ctx{ ci };
 			operation op = std::get<Pos>(ci.tuple_)(ctx, value,std::forward<T>(results)... );
@@ -237,7 +205,7 @@ namespace stackless_coroutine {
 				return operation::_continue;
 			}
 			else if (op == operation::_next) {
-				return do_next(ci, value, std::integral_constant<std::size_t,Pos + 1>{});
+				return do_next(ci, value,f, std::integral_constant<std::size_t,Pos + 1>{});
 			}
 			else if (op == operation::_return) {
 				return operation::_return;
@@ -257,9 +225,9 @@ namespace stackless_coroutine {
 
 	
 
-		template<class... T>
-		static operation process(CI& ci, typename CI::value_type& value, T&&... results) {
-				auto ctx = [ci = &ci](auto&&... a)mutable {
+		template<class Finished,class... T>
+		static operation process(CI& ci, typename CI::value_type& value,Finished& f, T&&... results) {
+				auto ctx = [ci = &ci,f = std::move(f)](auto&&... a)mutable {
 					dummy_coroutine_context dc;
 					using next_return = decltype(std::get<Pos + 1>(ci->tuple_)(dc, ci->value_, std::forward<decltype(a)>(a)...));
 
@@ -269,16 +237,16 @@ namespace stackless_coroutine {
 					
 					operation op;
 					try {
-						op = CP::process(*ci, ci->value_, std::forward<decltype(a)>(a)...);
+						op = CP::process(*ci, ci->value_,f, std::forward<decltype(a)>(a)...);
 					}
 					catch (...) {
 						auto ep = std::current_exception();
-						ci->on_finished_(ci->value_, ep,true);
+						f(ci->value_, ep,true,operation::_exception);
 						return operation::_done;
 					};
 
-					if (op == operation::_done) {
-						ci->on_finished_(ci->value_, nullptr,true);
+					if (op == operation::_done || op == operation::_return) {
+						f(ci->value_, nullptr,true,op);
 					}
 					return op;
 				};
@@ -292,11 +260,10 @@ namespace stackless_coroutine {
 	};
 
 
-	template<class ValueType,class OnFinished,bool Loop,class... T>
+	template<class ValueType,bool Loop,class... T>
 	struct coroutine{
 		using value_type = ValueType;
 		value_type value_;
-		OnFinished on_finished_;
 
 
 		std::tuple<T...> tuple_;
@@ -308,30 +275,30 @@ namespace stackless_coroutine {
 
 		using self_t = coroutine;
 
-		template<class V, class F,class... A>
-		coroutine(V v, F f, A&&... a) :value_{ std::move(v) }, on_finished_{ std::move(f) },tuple_ { std::forward<A>(a)... } {}
+		template<class V, class... A>
+		coroutine(V v, A&&... a) :value_{ std::move(v) }, tuple_ { std::forward<A>(a)... } {}
 
 
 
 
-		template<class... A>
-		auto run(A&&... a) {
+		template<class Finished,class... A>
+		auto run(Finished f,A&&... a) {
 
 			dummy_coroutine_context dc;
 			using ret_type = decltype(std::get<0>(tuple_)(dc, value_, std::forward<A>(a)...));
 			
 			operation op;
 			try {
-				op = coroutine_processor<self_t, ret_type, 0, size, false>::process(*this, value_, std::forward<A>(a)...);
+				op = coroutine_processor<self_t, ret_type, 0, size, false>::process(*this, value_,f, std::forward<A>(a)...);
 			}
 			catch (...) {
 				auto ep = std::current_exception();
-				on_finished_(value_, ep,false);
+				f(value_, ep,false,operation::_exception);
 
 			};
 
-			if (op == operation::_done) {
-				on_finished_(value_, nullptr,false);
+			if (op == operation::_done || op == operation::_done) {
+				f(value_, nullptr,false,op);
 			}
 			return op;
 	}
@@ -354,12 +321,9 @@ namespace stackless_coroutine {
 
 	template<class ValueFunc,class... T>
 	auto make_coroutine(ValueFunc&& vf,T&&... t) {
-		auto maker = [vf, t...](auto&& f){
 
-			return coroutine<std::decay_t<decltype(vf())>, std::decay_t<decltype(f)>, false, std::decay_t<T>...> { vf(), std::forward<decltype(f)>(f), std::move(t)... };
-		};
+			return coroutine<std::decay_t<decltype(vf())>, false, std::decay_t<T>...> { vf(),  std::forward<T>(t)... };
 
-		return maker;
 		
 	}
 
@@ -386,7 +350,9 @@ int main() {
 
 
 		},
-
+		[](auto& a, auto& b) {
+			return stackless_coroutine::operation::_return;
+		},
 		[](auto& a, auto& b) {
 			a(1);
 			return stackless_coroutine::async_result();
@@ -405,13 +371,13 @@ int main() {
 
 
 		)
-		(		[](auto& a, std::exception_ptr, bool as) {
+;
+
+
+	ci.run(		[](auto& a, std::exception_ptr, bool as,auto op) {
 			std::cout << "Finished\n";
-		})
-	;
-
-
-	ci.run();
+	});
+	
 
 	auto& v = ci.value();
 
