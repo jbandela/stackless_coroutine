@@ -4,6 +4,8 @@
 #include <tuple>
 #include <utility>
 #include <type_traits>
+#include <atomic>
+#include <exception>
 
 namespace stackless_coroutine {
 	enum class operation {
@@ -51,7 +53,6 @@ namespace stackless_coroutine {
 
 
 	struct async_result {
-		operation operation_ = operation::_suspend;
 	
 	};
 
@@ -265,20 +266,38 @@ namespace stackless_coroutine {
 					using CP =  coroutine_processor<CI, next_return, Pos + 1, Size,Loop>;
 					coroutine_context<CI, CP, Loop, true> ctx{ *ci };
 
-					CP::process(*ci, ci->value_, std::forward<decltype(a)>(a)...);
+					
+					operation op;
+					try {
+						op = CP::process(*ci, ci->value_, std::forward<decltype(a)>(a)...);
+					}
+					catch (...) {
+						auto ep = std::current_exception();
+						ci->on_finished_(ci->value_, ep,true);
+						return operation::_done;
+					};
+
+					if (op == operation::_done) {
+						ci->on_finished_(ci->value_, nullptr,true);
+					}
+					return op;
 				};
 
 
 	
-			auto ar = std::get<Pos>(ci.tuple_)(ctx, value,std::forward<T>(results)...);
-			return ar.operation_;
+			std::get<Pos>(ci.tuple_)(ctx, value,std::forward<T>(results)...);
+			return operation::_suspend;
 		}
 
 	};
 
 
-	template<class ValueType,bool Loop,class... T>
+	template<class ValueType,class OnFinished,bool Loop,class... T>
 	struct coroutine{
+		using value_type = ValueType;
+		value_type value_;
+		OnFinished on_finished_;
+
 
 		std::tuple<T...> tuple_;
 
@@ -289,13 +308,10 @@ namespace stackless_coroutine {
 
 		using self_t = coroutine;
 
-		template<class... A>
-		coroutine(A&&... a) :tuple_ { std::forward<A>(a)... } {}
+		template<class V, class F,class... A>
+		coroutine(V v, F f, A&&... a) :value_{ std::move(v) }, on_finished_{ std::move(f) },tuple_ { std::forward<A>(a)... } {}
 
 
-
-		using value_type = ValueType;
-		value_type value_;
 
 
 		template<class... A>
@@ -304,8 +320,21 @@ namespace stackless_coroutine {
 			dummy_coroutine_context dc;
 			using ret_type = decltype(std::get<0>(tuple_)(dc, value_, std::forward<A>(a)...));
 			
-				return coroutine_processor<self_t, ret_type, 0, size, false>::process(*this, value_,std::forward<A>(a)...);
-		}
+			operation op;
+			try {
+				op = coroutine_processor<self_t, ret_type, 0, size, false>::process(*this, value_, std::forward<A>(a)...);
+			}
+			catch (...) {
+				auto ep = std::current_exception();
+				on_finished_(value_, ep,false);
+
+			};
+
+			if (op == operation::_done) {
+				on_finished_(value_, nullptr,false);
+			}
+			return op;
+	}
 
 		value_type& value() { return value_; }
 		
@@ -321,11 +350,17 @@ namespace stackless_coroutine {
 
 	};
 
+
+
 	template<class ValueFunc,class... T>
 	auto make_coroutine(ValueFunc&& vf,T&&... t) {
-		auto c = coroutine<std::decay_t<decltype(vf())>,false,std::decay_t<T>...>{std::forward<T>(t)...};
-		c.value_ = vf();
-		return c;
+		auto maker = [vf, t...](auto&& f){
+
+			return coroutine<std::decay_t<decltype(vf())>, std::decay_t<decltype(f)>, false, std::decay_t<T>...> { vf(), std::forward<decltype(f)>(f), std::move(t)... };
+		};
+
+		return maker;
+		
 	}
 
 
@@ -337,7 +372,7 @@ namespace stackless_coroutine {
 int main() {
 
 
-	auto ci = stackless_coroutine:: make_coroutine(
+	auto ci = stackless_coroutine::make_coroutine(
 		
 		[]() {
 		struct val {
@@ -351,7 +386,8 @@ int main() {
 
 
 		},
-			[](auto& a, auto& b) {
+
+		[](auto& a, auto& b) {
 			a(1);
 			return stackless_coroutine::async_result();
 
@@ -368,7 +404,11 @@ int main() {
 		}
 
 
-		);
+		)
+		(		[](auto& a, std::exception_ptr, bool as) {
+			std::cout << "Finished\n";
+		})
+	;
 
 
 	ci.run();
