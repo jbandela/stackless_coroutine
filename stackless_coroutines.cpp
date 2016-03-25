@@ -349,7 +349,9 @@ namespace stackless_coroutine {
 	template<class ValueFunc,class... T>
 	auto make_coroutine(ValueFunc&& vf,T&&... t) {
 
-			return coroutine<std::decay_t<decltype(vf())>, false, std::decay_t<T>...> { vf(),  std::forward<T>(t)... };
+			
+		auto dummy_terminator = [](auto&&...) {};
+			return coroutine<std::decay_t<decltype(vf())>, false, std::decay_t<T>...,decltype(dummy_terminator)> { vf(),  std::forward<T>(t)...,dummy_terminator };
 
 		
 	}
@@ -395,7 +397,8 @@ namespace stackless_coroutine {
 	template<class ValueFunc, class...T>
 	auto  make_while_true(ValueFunc vf, T&&... t) {
 
-		auto func = [vf = std::move(vf), t..., value = decltype(vf()){}](auto& context, auto& outer_value)mutable -> operation {
+		auto dummy_terminator = [](auto&&...) {};
+		auto func = [vf = std::move(vf), t...,dummy_terminator, value = decltype(vf()){}](auto& context, auto& outer_value)mutable->operation {
 			using value_type = detail::while_value<std::decay_t<decltype(value)>, std::decay_t<decltype(outer_value)>>;
 
 
@@ -474,7 +477,7 @@ namespace stackless_coroutine {
 
 			while (true) {
 				//coroutine<value_type, true, std::decay_t<decltype(t)>...> c{ value_type{&value,&outer_value},  std::tie(t...) };
-				auto c = detail::get_while_coroutine<value_type>(value, outer_value, t...);
+				auto c = detail::get_while_coroutine<value_type>(value, outer_value, t...,dummy_terminator);
 				operation op;
 				try {
 					op = c.run(finished);
@@ -527,72 +530,62 @@ namespace stackless_coroutine {
 
 int main() {
 
+  auto ci = stackless_coroutine::make_coroutine(
 
-	auto ci = stackless_coroutine::make_coroutine(
+      []() {
+        struct val {
+          int x;
+          int y;
+          int z;
+        };
 
-		[]() {
-		struct val {
-			int x;
-			int y;
-			int z;
-		};
+        return val{0, 1, 2};
 
+      },
+      [](auto &a, auto &b) {
+        //			return stackless_coroutine::operation::_return;
+      },
+      [](auto &a, auto &b) {
+        a(1);
+        return stackless_coroutine::async_result();
 
-		return val{ 0,1,2 };
+      },
+      [](auto &a, auto &b, int v) {
+        a(1, 2);
+        return stackless_coroutine::async_result();
 
+      },
+      [](auto &a, auto &b, int x, int y) {
+        b.y = b.x + b.y + b.z;
+        return stackless_coroutine::operation::_next;
 
-	},
-		[](auto& a, auto& b) {
-		//			return stackless_coroutine::operation::_return;
-	},
-		[](auto& a, auto& b) {
-		a(1);
-		return stackless_coroutine::async_result();
+      },
+      stackless_coroutine::make_while_true(
+          []() {
+            struct dummy {};
+            return dummy{};
+          },
+          [](auto &a, auto &b) {
+            std::cout << "Inside breaker " << b.outer_value().x << std::endl;
+            if (b.outer_value().x > 5) {
+              return stackless_coroutine::operation::_break;
+            } else {
+              return stackless_coroutine::operation::_next;
+            }
 
-	},
-		[](auto& a, auto& b, int v) {
-		a(1, 2);
-		return stackless_coroutine::async_result();
+          },
+          [](auto &a, auto &b) { ++b.outer_value().x; }
 
-	},
-		[](auto& a, auto& b, int x, int y) {
-		b.y = b.x + b.y + b.z;
-		return stackless_coroutine::operation::_next;
+          )
+		  
+		  );
 
-	}
-		,
-		stackless_coroutine::make_while_true(
-			[]() {struct dummy {}; return dummy{};},
-			[](auto& a, auto&b) {
-		std::cout << "Inside breaker " << b.outer_value().x << std::endl;
-		if (b.outer_value().x > 5) {
-			return stackless_coroutine::operation::_break;
-		}
-		else {
-			return stackless_coroutine::operation::_next;
-		}
+  ci.run([](auto &a, std::exception_ptr, bool as, auto op) {
+    std::cout << stackless_coroutine::operations[static_cast<int>(op)]
+              << " Finished\n";
+  });
 
-	},
-		[](auto& a, auto& b) {
-		++b.outer_value().x;
-	}
+  auto &v = ci.value();
 
-
-		)
-,
-		[](auto& a, auto& b) {}
-
-
-		);
-
-
-	ci.run(		[](auto& a, std::exception_ptr, bool as,auto op) {
-			std::cout << stackless_coroutine::operations[static_cast<int>(op)] <<  " Finished\n";
-	});
-	
-
-	auto& v = ci.value();
-
-	
-	std::cout << v.x<< std::endl;
+  std::cout << v.x << std::endl;
 };
