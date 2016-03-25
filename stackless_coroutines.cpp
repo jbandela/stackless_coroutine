@@ -17,6 +17,16 @@ namespace stackless_coroutine {
 		_done,
 		_exception
 	};
+	const char* operations[] ={
+		"_suspend",
+		"_next",
+		"_return",
+		"_break",
+		"_continue",
+		"_done",
+		"_exception"
+	};
+
 
 	namespace detail {
 		struct value_base {
@@ -384,7 +394,6 @@ namespace stackless_coroutine {
 
 
 			value = vf();
-			coroutine<value_type, true, std::decay_t<decltype(t)>...> c{ value_type{&value,&outer_value},  std::tie(t...) };
 
 			auto finished = [context, pouter = &outer_value](auto& value, std::exception_ptr ep, bool async,operation op) mutable {
 				if (async) {
@@ -396,7 +405,7 @@ namespace stackless_coroutine {
 					constexpr auto pos = std::decay_t<decltype(context)>::position;
 					using DC = dummy_coroutine_context<CI,F,pos>;
 
-					if (ep) {
+					if (ep && op == operation::_exception) {
 						(*context.f_)(*pouter, ep, true, operation::_exception);
 					}
 					else if (op == operation::_break) {
@@ -457,19 +466,34 @@ namespace stackless_coroutine {
 
 			};
 
-			operation op;
-			try {
-				op = c.run(finished);
+			while (true) {
+				coroutine<value_type, true, std::decay_t<decltype(t)>...> c{ value_type{&value,&outer_value},  std::tie(t...) };
+				operation op;
+				try {
+					op = c.run(finished);
 
-				// reuse finished
-				if (op == operation::_break) {
-					return operation::_next;
+					// reuse finished
+					if (op == operation::_break) {
+						return operation::_next;
+					}
+					else if (op == operation::_exception) {
+						return op;
+					}
+					else if (op == operation::_return) {
+						return op;
+					}
+					else if (op == operation::_suspend) {
+						return op;
+					}
+	
+					else if (op == operation::_done) {
+						continue;
+					}
 				}
-				return finished(c.value_, nullptr, true, op);
-			}
-			catch (...) {
-				auto ep = std::current_exception();
-				return finished(c.value_, ep, true, operation::_exception);
+				catch (...) {
+					auto ep = std::current_exception();
+					return finished(c.value_, ep, true, operation::_exception);
+				}
 			}
 
 
@@ -556,7 +580,7 @@ int main() {
 
 
 	ci.run(		[](auto& a, std::exception_ptr, bool as,auto op) {
-			std::cout <<static_cast<int>( op) <<  " Finished\n";
+			std::cout << stackless_coroutine::operations[static_cast<int>(op)] <<  " Finished\n";
 	});
 	
 
