@@ -112,7 +112,7 @@ namespace stackless_coroutine {
 	struct loop_coroutine_context:Base {
 		using Base::Base;
 		operation do_break() { return operation::_break; }
-		operation do_continue() { return operation::_continue };
+		operation do_continue() { return operation::_continue; }
 	
 	};
 	//template<class CI,class CP>
