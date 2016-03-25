@@ -385,6 +385,12 @@ namespace stackless_coroutine {
 
 		};
 	
+		template<class value_type,class V, class OV,class... T>
+		auto get_while_coroutine(V& value,OV& outer_value,T&... t) {
+			return coroutine<value_type, true, T...> { value_type{ &value,&outer_value },  std::tie(t...) };
+		}
+
+
 	}
 	template<class ValueFunc, class...T>
 	auto  make_while_true(ValueFunc vf, T&&... t) {
@@ -467,7 +473,8 @@ namespace stackless_coroutine {
 			};
 
 			while (true) {
-				coroutine<value_type, true, std::decay_t<decltype(t)>...> c{ value_type{&value,&outer_value},  std::tie(t...) };
+				//coroutine<value_type, true, std::decay_t<decltype(t)>...> c{ value_type{&value,&outer_value},  std::tie(t...) };
+				auto c = detail::get_while_coroutine<value_type>(value, outer_value, t...);
 				operation op;
 				try {
 					op = c.run(finished);
