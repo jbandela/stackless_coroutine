@@ -44,6 +44,7 @@ template <class CI, class F, std::size_t Pos> struct dummy_coroutine_context {
   operation do_return() { return operation::_return; };
   operation do_break() { return operation::_break; }
   operation do_continue() { return operation::_continue; };
+  operation do_next() { return operation::_next; };
   template <class... T> async_result do_async() { return async_result{}; }
 
   dummy_coroutine_context() {}
@@ -61,7 +62,8 @@ template <class CI, class Finished, size_t Pos> struct base_coroutine_context {
   Finished *f_;
 
   operation do_return() { return operation::_return; };
-  base_coroutine_context(CI &ci) : ci_(&ci) {}
+  operation do_next() { return operation::_next; };
+  base_coroutine_context(CI &ci, Finished* f) : ci_(&ci), f_{ f } {}
 };
 template <class Base> struct loop_coroutine_context : Base {
   using Base::Base;
@@ -119,7 +121,7 @@ struct coroutine_processor<CI, void, Pos, Size, Loop> {
   static operation process(CI &ci, value_type &value, Finished &f,
                            T &&... results) {
 
-    coroutine_context<CI, Finished,Pos, Loop> ctx{ci};
+    coroutine_context<CI, Finished,Pos, Loop> ctx{ci,&f};
     std::get<Pos>(ci.tuple_)(ctx, value, std::forward<T>(results)...);
     return do_next(ci, value, f,
                    std::integral_constant<std::size_t, Pos + 1>{});
@@ -153,7 +155,7 @@ struct coroutine_processor<CI, operation, Pos, Size, Loop> {
   static operation process(CI &ci, value_type &value, Finished &f,
                            T &&... results) {
 
-    coroutine_context<CI, Finished,Pos, Loop> ctx{ci};
+    coroutine_context<CI, Finished,Pos, Loop> ctx{ci,&f};
     operation op =
         std::get<Pos>(ci.tuple_)(ctx, value, std::forward<T>(results)...);
     if (op == operation::_break) {
@@ -182,7 +184,7 @@ struct coroutine_processor<CI, async_result, Pos, Size, Loop> {
   struct async_context : coroutine_context<CI, Finished, Pos,Loop> {
 	  Finished f_value_;
 	  using base_t = coroutine_context<CI, Finished, Pos, Loop>;
-	  async_context(CI& ci, Finished&& f) :base_t{ ci }, f_value_{ std::move(f) } { this->f_ = &f_value_; }
+	  async_context(CI& ci, Finished&& f) :base_t{ ci,nullptr }, f_value_{ std::move(f) } { this->f_ = &f_value_; }
 	  using base_t::ci_;
 
 	  async_result do_async() { return async_result{}; }
@@ -275,7 +277,7 @@ template <class ValueType, bool Loop, class... T> struct coroutine {
 
     operation op;
     try {
-      op = coroutine_processor<self_t, ret_type, 0, size, false>::process(
+      op = coroutine_processor<self_t, ret_type, 0, size, Loop>::process(
           *this, value_, f, std::forward<A>(a)...);
     } catch (...) {
       auto ep = std::current_exception();
@@ -437,22 +439,21 @@ int main() {
         return val{0, 1, 2};
 
       },
-      [](auto &context, auto &b) {
+      [](auto &context, auto &value) {
         //			return stackless_coroutine::operation::_return;
       },
-      [](auto &context, auto &b) {
+      [](auto &context, auto &value) {
         context(1);
         return context.do_async();
 
       },
-      [](auto &a, auto &b, int v) {
-        a(1, 2);
-        return stackless_coroutine::async_result();
+      [](auto &context, auto &value, int v) {
+        context(1, 2);
+        return context.do_async();
 
       },
-      [](auto &a, auto &b, int x, int y) {
-        b.y = b.x + b.y + b.z;
-        return stackless_coroutine::operation::_next;
+      [](auto &context, auto &value, int x, int y) {
+        value.y = value.x + value.y + value.z;
 
       },
       stackless_coroutine::make_while_true(
@@ -460,16 +461,16 @@ int main() {
             struct dummy {};
             return dummy{};
           },
-          [](auto &a, auto &b) {
-            std::cout << "Inside breaker " << b.outer_value().x << std::endl;
-            if (b.outer_value().x > 5) {
-              return stackless_coroutine::operation::_break;
+          [](auto &context, auto &value) {
+            std::cout << "Inside breaker " << value.outer_value().x << std::endl;
+            if (value.outer_value().x > 5) {
+              return context.do_break();
             } else {
-              return stackless_coroutine::operation::_next;
+              return context.do_next();
             }
 
           },
-          [](auto &a, auto &b) { ++b.outer_value().x; }
+          [](auto &context, auto &value) { ++value.outer_value().x; }
 
           )
 
@@ -483,5 +484,4 @@ int main() {
   auto &v = ci.value();
 
   std::cout << v.x << std::endl;
-
 };
