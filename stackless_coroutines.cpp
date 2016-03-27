@@ -45,8 +45,8 @@ template <class CI, class F, std::size_t Pos> struct dummy_coroutine_context {
   enum { position = Pos };
 };
 
-template <class CI, class Finished, size_t Pos, bool CopyCI = false>
-struct base_coroutine_context {
+template <class CI, class Finished, size_t Pos, bool Loop >
+struct coroutine_context {
 
   enum { position = Pos };
   CI *ci_;
@@ -54,11 +54,11 @@ struct base_coroutine_context {
 
   operation do_return() { return operation::_return; };
   operation do_next() { return operation::_next; };
-  base_coroutine_context(CI &ci, Finished f) : ci_(&ci), f_{std::move(f)} {}
+  coroutine_context(CI &ci, Finished f) : ci_(&ci), f_{std::move(f)} {}
   CI &ci() { return *ci_; }
 };
 template <class CI, class Finished, size_t Pos>
-struct base_coroutine_context<CI, Finished, Pos, true> {
+struct coroutine_context<CI, Finished, Pos, true> {
 
   enum { position = Pos };
   CI ci_v_;
@@ -66,62 +66,23 @@ struct base_coroutine_context<CI, Finished, Pos, true> {
 
   operation do_return() { return operation::_return; };
   operation do_next() { return operation::_next; };
-  base_coroutine_context(CI ci, Finished f)
-      : ci_v_{std::move(ci)}, f_{std::move(f)} {}
-  CI &ci() { return ci_v_; }
-};
-
-template <class Base> struct loop_coroutine_context : Base {
-  using Base::Base;
   operation do_break() { return operation::_break; }
   operation do_continue() { return operation::_continue; }
+  coroutine_context(CI ci, Finished f)
+      : ci_v_{std::move(ci)}, f_{std::move(f)} {}
+  CI &ci() { return ci_v_; }
 };
 
 template <class CI, class ReturnValue, std::size_t Pos, std::size_t Size,
           bool Loop>
 struct coroutine_processor;
 
-template <class CI, class Finished, std::size_t Pos, bool Loop>
-struct coroutine_context_helper {
-  using type = base_coroutine_context<CI, Finished, Pos, Loop>;
-};
-
-template <class CI, class Finished, std::size_t Pos>
-struct coroutine_context_helper<CI, Finished, Pos, true> {
-
-  using base = base_coroutine_context<CI, Finished, Pos, true>;
-  using type = loop_coroutine_context<base>;
-};
-
-template <class CI, class Finished, std::size_t Pos, bool Loop>
-using coroutine_context =
-    typename coroutine_context_helper<CI, Finished, Pos, Loop>::type;
-
-template <class T> void assign_helper(T &v, T t) { v = std::move(t); }
-
 template <class CI, std::size_t Pos, std::size_t Size, bool Loop>
 struct coroutine_processor<CI, void, Pos, Size, Loop> {
   enum { position = Pos };
   using value_type = typename CI::value_type;
 
-  using self = coroutine_processor;
-
-  template <class Finished>
-  static operation do_next(CI &ci, value_type &value, Finished &,
-                           std::integral_constant<std::size_t, Size>) {
-    return operation::_done;
-  }
-  template <class Finished, std::size_t P>
-  static operation do_next(CI &ci, value_type &value, Finished &f,
-                           std::integral_constant<std::size_t, P>) {
-
-    using DC = dummy_coroutine_context<CI, Finished, P>;
-    using next_return =
-        decltype(std::get<P>(ci.tuple_)(std::declval<DC &>(), ci.value_));
-
-    return coroutine_processor<CI, next_return, P, Size, Loop>::process(
-        ci, value, f);
-  }
+  using helper = coroutine_processor<CI,operation,Pos,Size,Loop>;
 
   template <class Finished, class... T>
   static operation process(CI &ci, value_type &value, Finished f,
@@ -129,7 +90,7 @@ struct coroutine_processor<CI, void, Pos, Size, Loop> {
 
     coroutine_context<CI, Finished, Pos, Loop> ctx{ci, f};
     std::get<Pos>(ci.tuple_)(ctx, value, std::forward<T>(results)...);
-    return do_next(ci, value, f,
+    return helper::do_next(ci, value, f,
                    std::integral_constant<std::size_t, Pos + 1>{});
   }
 };
@@ -138,8 +99,6 @@ struct coroutine_processor<CI, operation, Pos, Size, Loop> {
 
   enum { position = Pos };
   using value_type = typename CI::value_type;
-
-  using self = coroutine_processor;
 
   template <class Finished>
   static operation do_next(CI &ci, value_type &value, Finished &f,
@@ -187,7 +146,6 @@ struct coroutine_processor<CI, async_result, Pos, Size, Loop> {
 
   enum { position = Pos };
 
-  using self = coroutine_processor;
   template <class Finished>
   struct async_context : coroutine_context<CI, Finished, Pos, Loop> {
     using base_t = coroutine_context<CI, Finished, Pos, Loop>;
