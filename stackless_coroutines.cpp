@@ -1,8 +1,8 @@
+#include <assert.h>
 #include <exception>
 #include <tuple>
 #include <type_traits>
 #include <utility>
-#include <assert.h>
 
 namespace stackless_coroutine {
 enum class operation {
@@ -45,7 +45,8 @@ template <class CI, class F, std::size_t Pos> struct dummy_coroutine_context {
   enum { position = Pos };
 };
 
-template <class CI, class Finished, size_t Pos,bool CopyCI = false> struct base_coroutine_context {
+template <class CI, class Finished, size_t Pos, bool CopyCI = false>
+struct base_coroutine_context {
 
   enum { position = Pos };
   CI *ci_;
@@ -53,12 +54,11 @@ template <class CI, class Finished, size_t Pos,bool CopyCI = false> struct base_
 
   operation do_return() { return operation::_return; };
   operation do_next() { return operation::_next; };
-  base_coroutine_context(CI &ci, Finished f) : ci_(&ci), f_{ std::move(f) } {
-  }
-  CI& ci() { return *ci_; }
+  base_coroutine_context(CI &ci, Finished f) : ci_(&ci), f_{std::move(f)} {}
+  CI &ci() { return *ci_; }
 };
 template <class CI, class Finished, size_t Pos>
-struct base_coroutine_context<CI,Finished,Pos,true> {
+struct base_coroutine_context<CI, Finished, Pos, true> {
 
   enum { position = Pos };
   CI ci_v_;
@@ -66,9 +66,9 @@ struct base_coroutine_context<CI,Finished,Pos,true> {
 
   operation do_return() { return operation::_return; };
   operation do_next() { return operation::_next; };
-  base_coroutine_context(CI ci, Finished f) : ci_v_{ std::move(ci) }, f_{ std::move(f) } {
-  }
-  CI& ci() { return ci_v_; }
+  base_coroutine_context(CI ci, Finished f)
+      : ci_v_{std::move(ci)}, f_{std::move(f)} {}
+  CI &ci() { return ci_v_; }
 };
 
 template <class Base> struct loop_coroutine_context : Base {
@@ -83,13 +83,13 @@ struct coroutine_processor;
 
 template <class CI, class Finished, std::size_t Pos, bool Loop>
 struct coroutine_context_helper {
-  using type = base_coroutine_context<CI, Finished, Pos,Loop>;
+  using type = base_coroutine_context<CI, Finished, Pos, Loop>;
 };
 
 template <class CI, class Finished, std::size_t Pos>
 struct coroutine_context_helper<CI, Finished, Pos, true> {
 
-  using base = base_coroutine_context<CI, Finished, Pos,true>;
+  using base = base_coroutine_context<CI, Finished, Pos, true>;
   using type = loop_coroutine_context<base>;
 };
 
@@ -189,9 +189,7 @@ struct coroutine_processor<CI, async_result, Pos, Size, Loop> {
   template <class Finished>
   struct async_context : coroutine_context<CI, Finished, Pos, Loop> {
     using base_t = coroutine_context<CI, Finished, Pos, Loop>;
-    async_context(CI &ci, Finished f)
-        : base_t{ci,std::move(f)}{
-    }
+    async_context(CI &ci, Finished f) : base_t{ci, std::move(f)} {}
     using base_t::ci;
 
     async_result do_async() { return async_result{}; }
@@ -213,7 +211,8 @@ struct coroutine_processor<CI, async_result, Pos, Size, Loop> {
         return operation::_done;
       };
 
-      if (op == operation::_done || op == operation::_return || op == operation::_continue || op== operation::_break) {
+      if (op == operation::_done || op == operation::_return ||
+          op == operation::_continue || op == operation::_break) {
         this->f_(ci().value_, nullptr, true, op);
       }
       return op;
@@ -223,31 +222,6 @@ struct coroutine_processor<CI, async_result, Pos, Size, Loop> {
   template <class Finished, class... T>
   static operation process(CI &ci, typename CI::value_type &value, Finished &f,
                            T &&... results) {
-
-    // auto ctx = [ ci = &ci, f = std::move(f) ](auto &&... a) mutable {
-    //  using DC = dummy_coroutine_context<CI, Finished, Pos + 1>;
-    //  using next_return = decltype(std::get<Pos + 1>(ci->tuple_)(
-    //      std::declval<DC &>(), ci->value_, std::forward<decltype(a)>(a)...));
-
-    //  using CP = coroutine_processor<CI, next_return, Pos + 1, Size, Loop>;
-    //  coroutine_context<CI, CP, Finished, Loop, false> ctx{*ci};
-
-    //  operation op;
-    //  try {
-    //    op = CP::process(*ci, ci->value_, f, std::forward<decltype(a)>(a)...);
-    //  } catch (...) {
-
-    //    auto ep = std::current_exception();
-    //    f(ci->value_, ep, true, operation::_exception);
-    //    return operation::_done;
-    //  };
-
-    //  if (op == operation::_done || op == operation::_return) {
-    //    f(ci->value_, nullptr, true, op);
-    //  }
-    //  return op;
-    //};
-
     async_context<Finished> ctx{ci, f};
 
     std::get<Pos>(ci.tuple_)(ctx, value, std::forward<T>(results)...);
@@ -361,26 +335,26 @@ auto while_true_finished_helper(Context &context) {
       std::declval<DC &>(), context.ci().value_));
 
   while (true) {
-	  operation op;
-	  try {
-		  op = coroutine_processor<CI, ret_type, pos, size, false>::process(
-			  context.ci(), context.ci().value_, context.f_);
-	  }
-	  catch (...) {
-		  auto ep = std::current_exception();
-		  (context.f_)(context.ci().value_, ep, true, operation::_exception);
-		  return operation::_exception;
-	  };
-	  if (op == operation::_done || op == operation::_return || op == operation::_break) {
-		  (context.f_)(context.ci().value_, nullptr, true, op);
-		  return op;
-	  }
-	  if (op == operation::_continue) {
-		  continue;
-	  }
-	  if (op == operation::_suspend) {
-		  return op;
-	  }
+    operation op;
+    try {
+      op = coroutine_processor<CI, ret_type, pos, size, false>::process(
+          context.ci(), context.ci().value_, context.f_);
+    } catch (...) {
+      auto ep = std::current_exception();
+      (context.f_)(context.ci().value_, ep, true, operation::_exception);
+      return operation::_exception;
+    };
+    if (op == operation::_done || op == operation::_return ||
+        op == operation::_break) {
+      (context.f_)(context.ci().value_, nullptr, true, op);
+      return op;
+    }
+    if (op == operation::_continue) {
+      continue;
+    }
+    if (op == operation::_suspend) {
+      return op;
+    }
   }
 }
 }
@@ -447,142 +421,152 @@ auto make_while_true(ValueFunc vf, T &&... t) {
 };
 }
 
-
-#include <iostream>
 #include <boost/asio.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <iostream>
 
-auto get_coroutine(boost::asio::io_service& io, std::string host,std::string service,std::string url) {
+auto get_coroutine(boost::asio::io_service &io, std::string host,
+                   std::string service, std::string url) {
   return stackless_coroutine::make_coroutine(
 
-      [&io,host,service,url]() {
+      [&io, host, service, url]() {
         struct val {
           std::string host;
           std::string service;
-		  std::string url;
-		  boost::asio::io_service& io;
+          std::string url;
+          boost::asio::io_service &io;
 
-		  std::unique_ptr<boost::asio::ip::tcp::resolver> resolver;
-		  boost::asio::ip::tcp::socket socket_;
-		  std::string request_string;
+          std::unique_ptr<boost::asio::ip::tcp::resolver> resolver;
+          boost::asio::ip::tcp::socket socket_;
+          std::string request_string;
         };
 
-		return val{ std::move(host),std::move(service),std::move(url),io,std::make_unique<boost::asio::ip::tcp::resolver>(io),boost::asio::ip::tcp::socket{io},std::string{} };
+        return val{std::move(host),
+                   std::move(service),
+                   std::move(url),
+                   io,
+                   std::make_unique<boost::asio::ip::tcp::resolver>(io),
+                   boost::asio::ip::tcp::socket{io},
+                   std::string{}};
 
       },
+      // Resolve the host
       [](auto &context, auto &value) {
-		  // Connect to the url
+        boost::asio::ip::tcp::resolver::query query{value.host, value.service};
+        value.resolver->async_resolve(query, context);
+        return context.do_async();
+      },
+      // Connect to the host
+      [](auto &context, auto &value, auto ec, auto iterator) {
 
-		  boost::asio::ip::tcp::resolver::query query{ value.host,value.service};
-		  value.resolver->async_resolve(query, context);
-		  return context.do_async();
-       },
-		  [](auto& context, auto& value, auto ec, auto iterator) {
+        if (ec) {
+          throw boost::system::system_error{ec};
+        } else {
+          boost::asio::async_connect(value.socket_, iterator, context);
+          return context.do_async();
+        }
 
-		   if (ec) {
-			   throw boost::system::system_error{ ec };
-		   }
-		   else {
-			   boost::asio::async_connect(value.socket_,iterator, context);
-			   return context.do_async();
-		   }
-		   
-	   },
-		  [](auto& context, auto& value, auto& ec, auto iterator) {
+      },
+      // Check if connection successful
+      [](auto &context, auto &value, auto &ec, auto iterator) {
 
-		   if (ec) {
-			   throw boost::system::system_error{ ec };
-		   }
-		   else {
-		   }
-		   
-	   },
-		   [](auto& context, auto& value) {
+        if (ec) {
+          throw boost::system::system_error{ec};
+        } else {
+        }
 
-		   std::stringstream request_stream;
-		   request_stream << "GET " << value.url << " HTTP/1.0\r\n";
-		   request_stream << "Host: " << value.host << "\r\n";
-		   request_stream << "Accept: */*\r\n";
-		   request_stream << "Connection: close\r\n\r\n";
+      },
+      // Send the GET message
+      [](auto &context, auto &value) {
 
-		   // Send the request.
-		   value.request_string = request_stream.str();
-		   auto& str = value.request_string;
-		   boost::asio::async_write(value.socket_, boost::asio::buffer(str.data(), str.size()), context);
-		   return context.do_async();
-	   },
-		   [](auto& context, auto& value,auto& ec, auto n) {
-		   if (ec) {
-			   throw boost::system::system_error{ ec };
-		   }
+        std::stringstream request_stream;
+        request_stream << "GET " << value.url << " HTTP/1.0\r\n";
+        request_stream << "Host: " << value.host << "\r\n";
+        request_stream << "Accept: */*\r\n";
+        request_stream << "Connection: close\r\n\r\n";
 
-	   },
+        // Send the request.
+        value.request_string = request_stream.str();
+        auto &str = value.request_string;
+        boost::asio::async_write(value.socket_,
+                                 boost::asio::buffer(str.data(), str.size()),
+                                 context);
+        return context.do_async();
+      },
+      //  Check for errors
+      [](auto &context, auto &value, auto &ec, auto n) {
+        if (ec) {
+          throw boost::system::system_error{ec};
+        }
+
+      },
+      // Read in a loop
       stackless_coroutine::make_while_true(
           []() {
             struct dummy {
-				std::string current;
-			};
+              std::string current;
+            };
             return dummy{};
           },
           [](auto &context, auto &value) {
-			  value.value().current.resize(50);
-			  value.outer_value().socket_.async_read_some(boost::asio::buffer(&value.value().current[0], value.value().current.size()),context);
-			  return context.do_async();
+            value.value().current.resize(20);
+            value.outer_value().socket_.async_read_some(
+                boost::asio::buffer(&value.value().current[0],
+                                    value.value().current.size()),
+                context);
+            return context.do_async();
 
           },
-		   [](auto& context, auto& value,auto& ec, auto n) {
-			  if (ec) {
-				  std::cerr << ec.message();
-				  return context.do_break();
-			  }
-			  value.value().current.resize(n);
-			  std::cout << value.value().current;
-			  return context.do_next();
-		  }
-          )
-			  );
+          [](auto &context, auto &value, auto &ec, auto n) {
+            if (ec) {
+              if (ec != boost::asio::error::eof)
+                std::cerr << ec.message();
+              return context.do_break();
+            }
+            value.value().current.resize(n);
+            std::cout << value.value().current;
+            return context.do_next();
+          }));
 }
 
 #include <future>
 #include <memory>
-#include<atomic>
 
-	std::atomic<int> is_done{ 0 };
 int main() {
 
-	boost::asio::io_service io;
-	std::exception_ptr eptr;
-	auto work = std::make_unique<boost::asio::io_service::work>(io);
+  boost::asio::io_service io;
+  auto work = std::make_unique<boost::asio::io_service::work>(io);
 
+  auto ci = get_coroutine(io, "www.httpbin.org", "http", "/");
 
-	
-  auto ci = get_coroutine(io,"www.httpbin.org","http","/");
+  std::promise<void> done_promise;
+
+  auto done_future = done_promise.get_future();
 
   auto func = [&]() {
-	  ci.run([&](auto &a, std::exception_ptr e, bool as, auto op) {
-		  is_done.store(1);
-		  eptr = e;
-	  });};
+    ci.run([&](auto &a, std::exception_ptr e, bool as, auto op) {
+      if (e) {
+        done_promise.set_exception(e);
+      } else {
+        done_promise.set_value();
+      }
+    });
+  };
 
   io.post(func);
 
-  auto frun = std::async(std::launch::async, [&]() {io.run();});
+  auto frun = std::async(std::launch::async, [&]() { io.run(); });
 
-  while (!is_done.load()) {
-	  std::this_thread::yield();
-  }
-
+  done_future.wait();
 
   work.reset();
+
   frun.get();
 
   try {
-	  if(eptr) {
-		  std::rethrow_exception(eptr);
-	  }
-  }
-  catch (std::exception& e) {
-	  std::cerr << e.what() << "\n";
-  }
 
+    done_future.get();
+  } catch (std::exception &e) {
+    std::cerr << e.what() << "\n";
+  }
 };
