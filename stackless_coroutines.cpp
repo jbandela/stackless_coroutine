@@ -153,7 +153,7 @@ struct coroutine_processor<CI, operation, Pos, Size, Loop> {
     using next_return =
         decltype(std::get<P>(ci.tuple_)(std::declval<DC &>(), ci.value_));
 
-    return coroutine_processor<CI, next_return, Pos + 1, Size, Loop>::process(
+    return coroutine_processor<CI, next_return, P, Size, Loop>::process(
         ci, value, f);
   }
 
@@ -167,7 +167,9 @@ struct coroutine_processor<CI, operation, Pos, Size, Loop> {
     if (op == operation::_break) {
       return operation::_break;
     } else if (op == operation::_continue) {
-      return operation::_continue;
+      return do_next(ci, value, f,
+                     std::integral_constant<std::size_t, 0>{});
+ 
     } else if (op == operation::_next) {
       return do_next(ci, value, f,
                      std::integral_constant<std::size_t, Pos + 1>{});
@@ -212,7 +214,7 @@ struct coroutine_processor<CI, async_result, Pos, Size, Loop> {
       };
 
       if (op == operation::_done || op == operation::_return ||
-          op == operation::_continue || op == operation::_break) {
+          op == operation::_break) {
         this->f_(ci().value_, nullptr, true, op);
       }
       return op;
@@ -334,7 +336,6 @@ auto while_true_finished_helper(Context &context) {
   using ret_type = decltype(std::get<pos>(context.ci().tuple_)(
       std::declval<DC &>(), context.ci().value_));
 
-  while (true) {
     operation op;
     try {
       op = coroutine_processor<CI, ret_type, pos, size, false>::process(
@@ -349,22 +350,22 @@ auto while_true_finished_helper(Context &context) {
       (context.f_)(context.ci().value_, nullptr, true, op);
       return op;
     }
-    if (op == operation::_continue) {
-      continue;
-    }
-    if (op == operation::_suspend) {
-      return op;
-    }
-  }
+	else {
+		return op;
+	}
+
 }
 }
 template <class ValueFunc, class... T>
 auto make_while_true(ValueFunc vf, T &&... t) {
   using namespace stackless_coroutine::detail;
 
-  auto dummy_terminator = [](auto &&...) {};
+  auto starter = [vf](auto& context,auto & value) {
+	  value.value() = vf();
+  };
+  auto dummy_terminator = [](auto &&...) {return operation::_continue;};
   auto func =
-      [ vf = std::move(vf), t..., dummy_terminator, value = decltype(vf()){} ](
+      [ vf = std::move(vf), starter,t..., dummy_terminator, value = decltype(vf()){} ](
           auto &context, auto &outer_value) mutable->operation {
     using value_type = detail::while_value<std::decay_t<decltype(value)>,
                                            std::decay_t<decltype(outer_value)>>;
@@ -378,24 +379,20 @@ auto make_while_true(ValueFunc vf, T &&... t) {
           (context.f_)(context.ci().value_, ep, true, operation::_exception);
         } else if (op == operation::_break) {
           detail::while_true_finished_helper<1>(context);
-        } else if (op == operation::_done || op == operation::_continue) {
-          detail::while_true_finished_helper<0>(context);
-        }
-
+        } 
         else if (op == operation::_return) {
 
           (context.f_)(value.outer_value(), ep, true, operation::_return);
         }
 
-        // don't have to do anything for operation::_next, and
-        // operation::_suspend
+        // for operation::_suspend just return the op
+		// We will not get back _done because of the dummy_terminator, and _continue will get handled by the regular processors
       }
       return op;
     };
 
-    while (true) {
       value = vf();
-      auto c = detail::get_while_coroutine<value_type>(value, outer_value, t...,
+      auto c = detail::get_while_coroutine<value_type>(value, outer_value, starter,t...,
                                                        dummy_terminator);
       operation op;
       try {
@@ -404,17 +401,13 @@ auto make_while_true(ValueFunc vf, T &&... t) {
         // reuse finished
         if (op == operation::_break) {
           return operation::_next;
-        } else if (op == operation::_exception || op == operation::_return ||
-                   op == operation::_suspend) {
+        } else  {
           return op;
-        } else if (op == operation::_done || op == operation::_continue) {
-          continue;
-        }
+       }
       } catch (...) {
         auto ep = std::current_exception();
         return operation::_exception;
       }
-    }
   };
 
   return func;
@@ -508,8 +501,12 @@ auto get_coroutine(boost::asio::io_service &io, std::string host,
             };
             return dummy{};
           },
+		  [](auto &context, auto &value) {
+			  assert(value.value().current.empty());
+			  value.value().current.resize(20);
+		  },
+ 
           [](auto &context, auto &value) {
-            value.value().current.resize(20);
             value.outer_value().socket_.async_read_some(
                 boost::asio::buffer(&value.value().current[0],
                                     value.value().current.size()),
