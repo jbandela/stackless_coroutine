@@ -496,10 +496,10 @@ auto get_coroutine(boost::asio::io_service &io, std::string host,
       // Read in a loop
       stackless_coroutine::make_while_true(
           []() {
-            struct dummy {
+            struct while_local {
               std::string current;
             };
-            return dummy{};
+            return while_local{};
           },
 		  [](auto &context, auto &value) {
 			  assert(value.value().current.empty());
