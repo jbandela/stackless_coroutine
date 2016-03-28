@@ -89,7 +89,7 @@ struct coroutine_processor<CI, void, Pos, Size, Loop> {
                            T &&... results) {
 
     coroutine_context<CI, Finished, Pos, Loop> ctx{ci, f};
-    std::get<Pos>(ci.tuple_)(ctx, value, std::forward<T>(results)...);
+    std::get<Pos>(ci.tuple())(ctx, value, std::forward<T>(results)...);
     return helper::do_next(ci, value, f,
                    std::integral_constant<std::size_t, Pos + 1>{});
   }
@@ -110,7 +110,7 @@ struct coroutine_processor<CI, operation, Pos, Size, Loop> {
                            std::integral_constant<std::size_t, P>) {
     using DC = dummy_coroutine_context<CI, Finished, P>;
     using next_return =
-        decltype(std::get<P>(ci.tuple_)(std::declval<DC &>(), ci.value_));
+        decltype(std::get<P>(ci.tuple())(std::declval<DC &>(), ci.value()));
 
     return coroutine_processor<CI, next_return, P, Size, Loop>::process(
         ci, value, f);
@@ -122,7 +122,7 @@ struct coroutine_processor<CI, operation, Pos, Size, Loop> {
 
     coroutine_context<CI, Finished, Pos, Loop> ctx{ci, f};
     operation op =
-        std::get<Pos>(ci.tuple_)(ctx, value, std::forward<T>(results)...);
+        std::get<Pos>(ci.tuple())(ctx, value, std::forward<T>(results)...);
     if (op == operation::_break) {
       return operation::_break;
     } else if (op == operation::_continue) {
@@ -155,25 +155,25 @@ struct coroutine_processor<CI, async_result, Pos, Size, Loop> {
     async_result do_async() { return async_result{}; }
     template <class... A> auto operator()(A &&... a) {
       using DC = dummy_coroutine_context<CI, Finished, Pos + 1>;
-      using next_return = decltype(std::get<Pos + 1>(ci().tuple_)(
-          std::declval<DC &>(), ci().value_, std::forward<decltype(a)>(a)...));
+      using next_return = decltype(std::get<Pos + 1>(ci().tuple())(
+          std::declval<DC &>(), ci().value(), std::forward<decltype(a)>(a)...));
 
       using CP = coroutine_processor<CI, next_return, Pos + 1, Size, Loop>;
 
       operation op;
       try {
-        op = CP::process(ci(), ci().value_, this->f_,
+        op = CP::process(ci(), ci().value(), this->f_,
                          std::forward<decltype(a)>(a)...);
       } catch (...) {
 
         auto ep = std::current_exception();
-        this->f_(ci().value_, ep, true, operation::_exception);
+        this->f_(ci().value(), ep, true, operation::_exception);
         return operation::_done;
       };
 
       if (op == operation::_done || op == operation::_return ||
           op == operation::_break) {
-        this->f_(ci().value_, nullptr, true, op);
+        this->f_(ci().value(), nullptr, true, op);
       }
       return op;
     }
@@ -184,22 +184,45 @@ struct coroutine_processor<CI, async_result, Pos, Size, Loop> {
                            T &&... results) {
     async_context<Finished> ctx{ci, f};
 
-    std::get<Pos>(ci.tuple_)(ctx, value, std::forward<T>(results)...);
+    std::get<Pos>(ci.tuple())(ctx, value, std::forward<T>(results)...);
     return operation::_suspend;
   }
 };
 
+template <class CO,class Finished, class... A> auto run_helper(CO& c,Finished f, A &&... a) {
+
+	using DC = dummy_coroutine_context<CO, Finished, 0>;
+	using ret_type = decltype(std::get<0>(c.tuple())(std::declval<DC &>(), c.value(),
+		std::forward<A>(a)...));
+
+	operation op;
+	try {
+		op = coroutine_processor<CO, ret_type, 0, CO::size, CO::is_loop>::process(
+			c, c.value(), f, std::forward<A>(a)...);
+	}
+	catch (...) {
+		auto ep = std::current_exception();
+		f(c.value(), ep, false, operation::_exception);
+	};
+
+	if (op == operation::_done || op == operation::_return) {
+		f(c.value(), nullptr, false, op);
+	}
+	return op;
+}
+
+
 template <class ValueType, bool Loop, class... T> struct coroutine {
   using value_type = ValueType;
+private:
   value_type value_;
 
   std::tuple<T...> tuple_;
+public:
 
-  using lambda_tuple_t = std::tuple<T...>;
 
   enum { is_loop = Loop };
   enum { size = sizeof...(T) };
-  enum { last_tuple_position = size - 1 };
 
   using self_t = coroutine;
 
@@ -212,27 +235,11 @@ template <class ValueType, bool Loop, class... T> struct coroutine {
       : value_{std::move(v)}, tuple_{std::move(a)} {}
 
   template <class Finished, class... A> auto run(Finished f, A &&... a) {
-
-    using DC = dummy_coroutine_context<self_t, Finished, 0>;
-    using ret_type = decltype(std::get<0>(tuple_)(std::declval<DC &>(), value_,
-                                                  std::forward<A>(a)...));
-
-    operation op;
-    try {
-      op = coroutine_processor<self_t, ret_type, 0, size, Loop>::process(
-          *this, value_, f, std::forward<A>(a)...);
-    } catch (...) {
-      auto ep = std::current_exception();
-      f(value_, ep, false, operation::_exception);
-    };
-
-    if (op == operation::_done || op == operation::_return) {
-      f(value_, nullptr, false, op);
-    }
-    return op;
+	  return run_helper(*this, std::move(f), std::forward<A>(a)...);
   }
 
   value_type &value() { return value_; }
+  auto &tuple() { return tuple_; }
 };
 }
 
@@ -285,27 +292,27 @@ template <std::size_t Offset, class Context>
 auto while_true_finished_helper(Context &context) {
 
   constexpr auto size =
-      std::tuple_size<std::decay_t<decltype(context.ci().tuple_)>>::value;
+      std::tuple_size<std::decay_t<decltype(context.ci().tuple())>>::value;
   constexpr auto pos = Context::position + Offset;
   using CI = std::decay_t<decltype(context.ci())>;
   using F = std::decay_t<decltype(context.f_)>;
 
   using DC = dummy_coroutine_context<CI, F, pos>;
-  using ret_type = decltype(std::get<pos>(context.ci().tuple_)(
-      std::declval<DC &>(), context.ci().value_));
+  using ret_type = decltype(std::get<pos>(context.ci().tuple())(
+      std::declval<DC &>(), context.ci().value()));
 
     operation op;
     try {
       op = coroutine_processor<CI, ret_type, pos, size, false>::process(
-          context.ci(), context.ci().value_, context.f_);
+          context.ci(), context.ci().value(), context.f_);
     } catch (...) {
       auto ep = std::current_exception();
-      (context.f_)(context.ci().value_, ep, true, operation::_exception);
+      (context.f_)(context.ci().value(), ep, true, operation::_exception);
       return operation::_exception;
     };
     if (op == operation::_done || op == operation::_return ||
         op == operation::_break) {
-      (context.f_)(context.ci().value_, nullptr, true, op);
+      (context.f_)(context.ci().value(), nullptr, true, op);
       return op;
     }
 	else {
@@ -334,7 +341,7 @@ auto make_while_true(ValueFunc vf, T &&... t) {
                               operation op) mutable {
       if (async) {
         if (ep && op == operation::_exception) {
-          (context.f_)(context.ci().value_, ep, true, operation::_exception);
+          (context.f_)(context.ci().value(), ep, true, operation::_exception);
         } else if (op == operation::_break) {
           detail::while_true_finished_helper<1>(context);
         } 
