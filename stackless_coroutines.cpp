@@ -198,6 +198,7 @@ struct finished_wrapper {
 	template<class... A>
 	auto operator()(A&& ...a) {
 		Destroyer d{ value_ };
+		(void)d;
 		return f_(std::forward<A>(a)...);
 	}
 
@@ -218,7 +219,9 @@ struct finished_wrapper<Value,Tuple*,F,Destroyer> {
 	template<class... A>
 	auto operator()(A&&...a) {
 		Destroyer d{ value_ };
+		(void)d;
 		return f_(std::forward<A>(a)...);
+
 	}
 
 
