@@ -28,7 +28,7 @@ static_assert(static_cast<std::size_t>(operation::_size) + 1 ==
 namespace detail {
 struct async_result {};
 
-template <class CI, class F, std::size_t Pos> struct dummy_coroutine_context {
+template <class F, std::size_t Pos> struct dummy_coroutine_context {
 
   template <class... T> void operator()(T &&... t) {}
 
@@ -54,105 +54,78 @@ struct loop_base<true> {
 };
 
 
-template<bool copy>
-struct no_copy_move {
-	no_copy_move(const no_copy_move&) = delete;
-	no_copy_move(no_copy_move&&) = delete;
-	no_copy_move() {}
-
-
-
-};
-
-template<>
-struct no_copy_move<false> {
-	no_copy_move(const no_copy_move&) = default;
-	no_copy_move(no_copy_move&&) = default;
-
-	no_copy_move() {}
-
-
-
-
-};
-
-template <class CI, class Finished, size_t Pos, bool Loop,bool NoCopy=true >
+template <class Finished, size_t Pos, bool Loop>
 struct coroutine_context:loop_base<Loop> {
 
   enum { position = Pos };
-  Finished f_;
 
   operation do_return() { return operation::_return; };
   operation do_next() { return operation::_next; };
 
-  coroutine_context(Finished f) : f_{std::move(f)} {}
-  CI &ci() { return f_.c(); }
+  coroutine_context(Finished f) : f_{ std::move(f) } {}
+  Finished f_;
+  Finished& f() { return f_; }
 
-  no_copy_move<NoCopy> no_copy;
 };
 
 
-template <class CI, class ReturnValue, std::size_t Pos, std::size_t Size,
+template <class ReturnValue, std::size_t Pos, std::size_t Size,
           bool Loop>
 struct coroutine_processor;
 
-template <class CI, std::size_t Pos, std::size_t Size, bool Loop>
-struct coroutine_processor<CI, void, Pos, Size, Loop> {
+template <std::size_t Pos, std::size_t Size, bool Loop>
+struct coroutine_processor<void, Pos, Size, Loop> {
   enum { position = Pos };
-  using value_type = typename CI::value_type;
 
-  using helper = coroutine_processor<CI,operation,Pos,Size,Loop>;
+  using helper = coroutine_processor<operation,Pos,Size,Loop>;
 
   template <class Finished, class... T>
   static operation process(Finished& f,
                            T &&... results) {
 
-	  auto& ci = f.c();
-	  auto& value = ci.value();
-    coroutine_context<CI, Finished, Pos, Loop> ctx{std::move(f)};
-    std::get<Pos>(ci.tuple())(ctx, value, std::forward<T>(results)...);
-    return helper::do_next(ci, value, f,
+	  auto& tuple = f.tuple();
+	  auto& value = f.value();
+    coroutine_context<Finished, Pos, Loop> ctx{std::move(f)};
+    std::get<Pos>(tuple)(ctx, value, std::forward<T>(results)...);
+    return helper::do_next(f,
                    std::integral_constant<std::size_t, Pos + 1>{});
   }
 };
-template <class CI, std::size_t Pos, std::size_t Size, bool Loop>
-struct coroutine_processor<CI, operation, Pos, Size, Loop> {
+template <std::size_t Pos, std::size_t Size, bool Loop>
+struct coroutine_processor<operation, Pos, Size, Loop> {
 
   enum { position = Pos };
-  using value_type = typename CI::value_type;
 
   template <class Finished>
-  static operation do_next(CI &ci, value_type &value, Finished &f,
+  static operation do_next(Finished &f,
                            std::integral_constant<std::size_t, Size>) {
     return operation::_done;
   }
   template <class Finished, std::size_t P>
-  static operation do_next(CI &ci, value_type &value, Finished &&f,
+  static operation do_next(Finished &&f,
                            std::integral_constant<std::size_t, P>) {
-    using DC = dummy_coroutine_context<CI, Finished, P>;
+    using DC = dummy_coroutine_context<Finished, P>;
     using next_return =
-        decltype(std::get<P>(ci.tuple())(std::declval<DC &>(), ci.value()));
+        decltype(std::get<P>(f.tuple())(std::declval<DC &>(), f.value()));
 
-    return coroutine_processor<CI, next_return, P, Size, Loop>::process(f);
+    return coroutine_processor<next_return, P, Size, Loop>::process(f);
   }
 
   template <class Finished, class... T>
   static operation process(Finished& f,
                            T &&... results) {
 
-	  auto& ci = f.c();
-	  auto& value = ci.value();
-    coroutine_context<CI, Finished, Pos, Loop> ctx{f};
+    coroutine_context<Finished, Pos, Loop> ctx{std::move(f)};
     operation op =
-        std::get<Pos>(ci.tuple())(ctx, value, std::forward<T>(results)...);
+        std::get<Pos>(f.tuple())(ctx, f.value(), std::forward<T>(results)...);
     if (op == operation::_break) {
       return operation::_break;
     } else if (op == operation::_continue) {
-      return do_next(ci, value, f,
+      return do_next(f,
                      std::integral_constant<std::size_t, 0>{});
  
     } else if (op == operation::_next) {
-      return do_next(ci, value, f,
+      return do_next(f,
                      std::integral_constant<std::size_t, Pos + 1>{});
     } else if (op == operation::_return) {
       return operation::_return;
@@ -163,39 +136,39 @@ struct coroutine_processor<CI, operation, Pos, Size, Loop> {
   }
 };
 
-template <class CI, std::size_t Pos, std::size_t Size, bool Loop>
-struct coroutine_processor<CI, async_result, Pos, Size, Loop> {
+template <std::size_t Pos, std::size_t Size, bool Loop>
+struct coroutine_processor<async_result, Pos, Size, Loop> {
 
   enum { position = Pos };
 
   template <class Finished>
-  struct async_context : coroutine_context<CI, Finished, Pos, Loop,false> {
-    using base_t = coroutine_context<CI, Finished, Pos, Loop,false>;
+  struct async_context : coroutine_context<Finished, Pos, Loop> {
+    using base_t = coroutine_context<Finished, Pos, Loop>;
     async_context(Finished f) : base_t{std::move(f)} {}
-    using base_t::ci;
+    using base_t::f;
 
     async_result do_async() { return async_result{}; }
     template <class... A> auto operator()(A &&... a) {
-      using DC = dummy_coroutine_context<CI, Finished, Pos + 1>;
-      using next_return = decltype(std::get<Pos + 1>(ci().tuple())(
-          std::declval<DC &>(), ci().value(), std::forward<decltype(a)>(a)...));
+      using DC = dummy_coroutine_context<Finished, Pos + 1>;
+      using next_return = decltype(std::get<Pos + 1>(f().tuple())(
+          std::declval<DC &>(), f().value(), std::forward<decltype(a)>(a)...));
 
-      using CP = coroutine_processor<CI, next_return, Pos + 1, Size, Loop>;
+      using CP = coroutine_processor<next_return, Pos + 1, Size, Loop>;
 
       operation op;
       try {
-        op = CP::process(this->f_,
+        op = CP::process(f(),
                          std::forward<decltype(a)>(a)...);
       } catch (...) {
 
         auto ep = std::current_exception();
-        this->f_(ci().value(), ep, true, operation::_exception);
+        f()(f().value(), ep, true, operation::_exception);
         return operation::_done;
       };
 
       if (op == operation::_done || op == operation::_return ||
           op == operation::_break) {
-        this->f_(ci().value(), nullptr, true, op);
+        f()(f().value(), nullptr, true, op);
       }
       return op;
     }
@@ -204,188 +177,131 @@ struct coroutine_processor<CI, async_result, Pos, Size, Loop> {
   template <class Finished, class... T>
   static operation process(Finished &f,
                            T &&... results) {
-	  auto& ci = f.c();
-	  auto& value = ci.value();
     async_context<Finished> ctx{f};
 
-    std::get<Pos>(ci.tuple())(ctx, value, std::forward<T>(results)...);
+    std::get<Pos>(f.tuple())(ctx, f.value(), std::forward<T>(results)...);
     return operation::_suspend;
   }
 };
 
-template<class T,class F>
-struct ref_finished_wrapper {
-	F f_;
-	T* co_;
+template<class Value,class Tuple,class F, class Destroyer = Value* >
+struct finished_wrapper {
 
-	T& c() { return *co_; };
+	Value* value_;
+	Tuple tuple_;
+	F f_;
+
+	Tuple& tuple() { return tuple_; };
+	Value& value() { return *value_; }
+	enum { tuple_size = std::tuple_size<Tuple>::value };
+
 	template<class... A>
-	auto operator()(A&&... a) {
+	auto operator()(A&& ...a) {
+		Destroyer d{ value_ };
 		return f_(std::forward<A>(a)...);
 	}
 
-	ref_finished_wrapper(T& c, F f) :co_{ &c }, f_{ std::move(f) } {};
 
 
 };
-template<class T,class F>
-struct owning_ref_finished_wrapper {
-	F f_;
-	T* co_;
+template<class Value, class Tuple, class F, class Destroyer>
+struct finished_wrapper<Value,Tuple*,F,Destroyer> {
 
-	T& c() { return *co_; };
+	Value* value_;
+	Tuple* tuple_;
+	F f_;
+
+	Tuple& tuple() { return *tuple_; };
+	Value& value() { return *value_; }
+	enum { tuple_size = std::tuple_size<Tuple>::value };
+
 	template<class... A>
-	auto operator()(A&&... a) {
-		std::unique_ptr<T> deleter{ co_ };
+	auto operator()(A&&...a) {
+		Destroyer d{ value_ };
 		return f_(std::forward<A>(a)...);
 	}
 
-	owning_ref_finished_wrapper(T& c, F f) :co_{ &c }, f_{ std::move(f) } {};
 
-};
-template<class T,class F>
-struct containing_finished_wrapper {
-	F f_;
-	T co_;
-
-	T& c() { return co_; };
-	template<class... A>
-	auto operator()(A&&... a) {
-		return f_(std::forward<A>(a)...);
-	}
-
-	containing_finished_wrapper(T& c, F f) :co_{ std::move(c) }, f_{ std::move(f) } {};
 
 };
 
 
+template <bool IsLoop, class Finished,class... A> auto run_helper(Finished f, A &&... a) {
 
-template <template<class,class> class wrapper, class CO,class FinishedTemp, class... A> auto run_helper(CO& c,FinishedTemp f_temp, A &&... a) {
 
-	using Finished = wrapper<CO, FinishedTemp>;
-	using DC = dummy_coroutine_context<CO, Finished, 0>;
-	using ret_type = decltype(std::get<0>(c.tuple())(std::declval<DC &>(), c.value(),
+	using DC = dummy_coroutine_context<Finished, 0>;
+	using ret_type = decltype(std::get<0>(f.tuple())(std::declval<DC &>(), f.value(),
 		std::forward<A>(a)...));
 
-	Finished f{ c,std::move(f_temp) };
 	operation op;
 	try {
-		op = coroutine_processor<CO, ret_type, 0, CO::size, CO::is_loop>::process(
+		op = coroutine_processor<ret_type, 0, Finished::tuple_size, IsLoop>::process(
 			f, std::forward<A>(a)...);
 	}
 	catch (...) {
 		auto ep = std::current_exception();
-		f(f.c().value(), ep, false, operation::_exception);
+		f(f.value(), ep, false, operation::_exception);
+		return operation::_exception;
 	};
 
 	if (op == operation::_done || op == operation::_return) {
-		f(f.c().value(), nullptr, false, op);
+		f(f.value(), nullptr, false, op);
 	}
 	return op;
 }
 
+template <class Value, class Tuple, class FinishedTemp, class... A> auto run_loop(Value* v, Tuple t, FinishedTemp f_temp, A &&... a) {
+	using Finished = finished_wrapper<Value, Tuple, FinishedTemp>;
 
-template <class ValueType, bool Loop, class... T> struct coroutine {
-  using value_type = ValueType;
-private:
-  value_type value_;
-
-  std::tuple<T...> tuple_;
-public:
-
-
-  enum { is_loop = Loop };
-  enum { size = sizeof...(T) };
-
-  using self_t = coroutine;
-
-  template <class V, class... A>
-  coroutine(V v, A &&... a)
-      : value_{std::move(v)}, tuple_{std::forward<A>(a)...} {}
-
-  template <class V, class... A>
-  coroutine(V v, std::tuple<A...> a)
-      : value_{std::move(v)}, tuple_{std::move(a)} {}
-
-  template <class Finished, class... A> auto run(Finished f, A &&... a) {
-	  return run_helper<ref_finished_wrapper>(*this, std::move(f), std::forward<A>(a)...);
-  }
-
-  value_type &value() { return value_; }
-  auto &tuple() { return tuple_; }
-};
+	return run_helper<true>(Finished{ v,std::move(t),std::move(f_temp) });
 }
 
-template <class ValueFunc, class... T>
-auto make_coroutine(ValueFunc &&vf, T &&... t) {
-  using namespace stackless_coroutine::detail;
 
-  auto dummy_terminator = [](auto &&...) {};
-  return coroutine<std::decay_t<decltype(vf())>, false, std::decay_t<T>...,
-                   decltype(dummy_terminator)>{vf(), std::forward<T>(t)...,
-                                               dummy_terminator};
+
+}
+template <class Value, class Tuple, class FinishedTemp, class... A> auto run(Value* v, Tuple t, FinishedTemp f_temp, A &&... a) {
+	using Finished = detail::finished_wrapper<Value, Tuple, FinishedTemp>;
+
+	return detail::run_helper<false>(Finished{ v,std::move(t),std::move(f_temp) });
+}
+template <class Type, class Deleter, class Tuple, class FinishedTemp, class... A> auto run(std::unique_ptr<Type,Deleter> v, Tuple t, FinishedTemp f_temp, A &&... a) {
+	using Finished = detail::finished_wrapper<Type, Tuple, FinishedTemp,std::unique_ptr<Type,Deleter>>;
+
+	return detail::run_helper<false>(Finished{ v.release(),std::move(t),std::move(f_temp) });
 }
 
+
+template<class... T>
+auto make_coroutine_tuple(T&&... t) {
+	auto dummy = [](auto&&...) {};
+
+	return std::make_tuple(std::forward<T>(t)..., std::move(dummy));
+
+}
 namespace detail {
-
-template <class T, class OuterValue> struct while_value : T {
-  T *value_;
-  OuterValue *outer_;
-  OuterValue *outer_most_;
-
-  auto &outer_value() { return *outer_; }
-  auto &outer_most_value() { return *outer_most_; }
-  auto &value() { return *value_; }
-
-  while_value(T *t, OuterValue *outer)
-      : value_{t}, outer_{outer}, outer_most_{outer} {}
-};
-template <class T, class OuterT, class OuterOuterValue>
-struct while_value<T, while_value<OuterT, OuterOuterValue>> : T {
-  using OuterValue = while_value<OuterT, OuterOuterValue>;
-  T *value_;
-  OuterValue *outer_;
-  OuterValue *outer_most_;
-
-  auto &outer_value() { return *outer_; }
-  auto &outer_most_value() { return *outer_most_; }
-  auto &value() { return *value_; }
-
-  while_value(T *t, OuterValue *outer)
-      : value_{t}, outer_{outer}, outer_most_{outer->outer_most_} {}
-};
-
-template <class value_type, class V, class OV, class... T>
-auto get_while_coroutine(V &value, OV &outer_value, T &... t) {
-  return coroutine<value_type, true, T...>{value_type{&value, &outer_value},
-                                           std::tie(t...)};
-}
 
 template <std::size_t Offset, class Context,class Finished>
 auto while_true_finished_helper(Finished &f) {
 
-  constexpr auto size =
-      std::tuple_size<std::decay_t<decltype(f.c().tuple())>>::value;
+	constexpr auto size = Finished::tuple_size;
   constexpr auto pos = Context::position + Offset;
-  using CI = std::decay_t<decltype(f.c())>;
-  using F = std::decay_t<decltype(f)>;
 
-  using DC = dummy_coroutine_context<CI, F, pos>;
-  using ret_type = decltype(std::get<pos>(f.c().tuple())(
-      std::declval<DC &>(), f.c().value()));
+  using DC = dummy_coroutine_context<Finished, pos>;
+  using ret_type = decltype(std::get<pos>(f.tuple())(
+      std::declval<DC &>(), f.value()));
 
     operation op;
     try {
-      op = coroutine_processor<CI, ret_type, pos, size, false>::process(
+      op = coroutine_processor<ret_type, pos, size, false>::process(
           f);
     } catch (...) {
       auto ep = std::current_exception();
-      (f)(f.c().value(), ep, true, operation::_exception);
+      (f)(f.value(), ep, true, operation::_exception);
       return operation::_exception;
     };
     if (op == operation::_done || op == operation::_return ||
         op == operation::_break) {
-      (f)(f.c().value(), nullptr, true, op);
+      (f)(f.value(), nullptr, true, op);
       return op;
     }
 	else {
@@ -394,64 +310,29 @@ auto while_true_finished_helper(Finished &f) {
 
 }
 
-template<class OuterContext>
-struct while_finished {
-	OuterContext context;
-	template<class V>
-    operation operator()( V &value, std::exception_ptr ep, bool async,
-                              operation op) {
-      if (async) {
-        if (ep && op == operation::_exception) {
-          (context.f_)(context.ci().value(), ep, true, operation::_exception);
-        } else if (op == operation::_break) {
-          detail::while_true_finished_helper<1>(context);
-        } 
-        else if (op == operation::_return) {
-
-          (context.f_)(value.outer_value(), ep, true, operation::_return);
-        }
-
-        // for operation::_suspend just return the op
-		// We will not get back _done because of the dummy_terminator, and _continue will get handled by the regular processors
-      }
-      return op;
-    };
-
-
-};
-
 }
-template <class ValueFunc, class... T>
-auto make_while_true(ValueFunc vf, T &&... t) {
-  using namespace stackless_coroutine::detail;
+template <class... T>
+auto make_while_true(T &&... t) {
 
-  auto starter = [vf](auto& context,auto & value) {
-	  value.value() = vf();
-  };
   auto dummy_terminator = [](auto &&...) {return operation::_continue;};
+  auto tuple = make_coroutine_tuple(std::forward<T>(t)..., std::move(dummy_terminator));
   auto func =
-      [ vf = std::move(vf), starter,t..., dummy_terminator, value = decltype(vf()){} ](
-          auto& context, auto &outer_value) mutable->operation {
-    using value_type = detail::while_value<std::decay_t<decltype(value)>,
-                                           std::decay_t<decltype(outer_value)>>;
+      [tuple = std::move(tuple) ](
+          auto& context, auto& value) mutable->operation {
 
-	using context_type = std::decay_t<decltype(context)>;
-      value = vf();
-      auto c = detail::get_while_coroutine<value_type>(value, outer_value, starter,t...,
-                                                       dummy_terminator);
+	  using context_type = std::decay_t<decltype(context)>;
 
- 
-    auto finished = [f = context.f_](auto &value, std::exception_ptr ep, bool async,
+    auto finished = [f = context.f()](auto &value, std::exception_ptr ep, bool async,
                               operation op) mutable {
       if (async) {
         if (ep && op == operation::_exception) {
-          (f)(f.c().value(), ep, true, operation::_exception);
+          (f)(f.value(), ep, true, operation::_exception);
         } else if (op == operation::_break) {
           detail::while_true_finished_helper<1,context_type>(f);
         } 
         else if (op == operation::_return) {
 
-          (f)(value.outer_value(), ep, true, operation::_return);
+          (f)(f.value(), ep, true, operation::_return);
         }
 
         // for operation::_suspend just return the op
@@ -462,7 +343,7 @@ auto make_while_true(ValueFunc vf, T &&... t) {
 
      operation op;
       try {
-		  op = run_helper<containing_finished_wrapper>(c, finished);
+		  op = detail::run_loop(&value,&tuple, finished);
 
         // reuse finished
         if (op == operation::_break) {
@@ -484,35 +365,45 @@ auto make_while_true(ValueFunc vf, T &&... t) {
 #include <boost/asio/ip/tcp.hpp>
 #include <iostream>
 
-auto get_coroutine(boost::asio::io_service &io, std::string host,
-                   std::string service, std::string url) {
-  return stackless_coroutine::make_coroutine(
-
-      [&io, host, service, url]() {
+template<class Finished>
+auto do_coroutine(boost::asio::io_service &io, std::string host,
+                   std::string service, std::string url, Finished f) {
         struct val {
           std::string host;
           std::string service;
           std::string url;
           boost::asio::io_service &io;
 
-          std::unique_ptr<boost::asio::ip::tcp::resolver> resolver;
+          boost::asio::ip::tcp::resolver resolver;
           boost::asio::ip::tcp::socket socket_;
           std::string request_string;
+		  std::string current;
+
+		  val(std::string host, std::string service, std::string url, boost::asio::io_service& io) :
+			  host{ std::move(host) },
+			  service{ std::move(service) },
+			  url{ std::move(url) },
+			  io{ io },
+			  resolver{ io },
+			  socket_{ io }
+		  {}
+		  ~val() {
+			  std::cerr << "Destroyed\n";
+		  }
+
         };
 
-        return val{std::move(host),
-                   std::move(service),
-                   std::move(url),
-                   io,
-                   std::make_unique<boost::asio::ip::tcp::resolver>(io),
-                   boost::asio::ip::tcp::socket{io},
-                   std::string{}};
+		auto pval = std::make_unique<val>(std::move(host),
+			std::move(service),
+			std::move(url),
+			io);
+ 
+	auto tuple = 
+ stackless_coroutine::make_coroutine_tuple(
 
-      },
-      // Resolve the host
       [](auto &context, auto &value) {
         boost::asio::ip::tcp::resolver::query query{value.host, value.service};
-        value.resolver->async_resolve(query, context);
+        value.resolver.async_resolve(query, context);
         return context.do_async();
       },
       // Connect to the host
@@ -561,21 +452,14 @@ auto get_coroutine(boost::asio::io_service &io, std::string host,
       },
       // Read in a loop
       stackless_coroutine::make_while_true(
-          []() {
-            struct while_local {
-              std::string current;
-            };
-            return while_local{};
-          },
 		  [](auto &context, auto &value) {
-			  assert(value.value().current.empty());
-			  value.value().current.resize(20);
+			  value.current.resize(20);
 		  },
  
           [](auto &context, auto &value) {
-            value.outer_value().socket_.async_read_some(
-                boost::asio::buffer(&value.value().current[0],
-                                    value.value().current.size()),
+            value.socket_.async_read_some(
+                boost::asio::buffer(&value.current[0],
+                                    value.current.size()),
                 context);
             return context.do_async();
 
@@ -586,10 +470,13 @@ auto get_coroutine(boost::asio::io_service &io, std::string host,
                 std::cerr << ec.message();
               return context.do_break();
             }
-            value.value().current.resize(n);
-            std::cout << value.value().current;
+            value.current.resize(n);
+            std::cout << value.current;
             return context.do_next();
           }));
+
+	return stackless_coroutine::run(std::move(pval), tuple, std::move(f));
+
 }
 
 #include <future>
@@ -600,14 +487,13 @@ int main() {
   boost::asio::io_service io;
   auto work = std::make_unique<boost::asio::io_service::work>(io);
 
-  auto ci = get_coroutine(io, "www.httpbin.org", "http", "/");
 
   std::promise<void> done_promise;
 
   auto done_future = done_promise.get_future();
 
   auto func = [&]() {
-    ci.run([&](auto &a, std::exception_ptr e, bool as, auto op) {
+    do_coroutine( io, "www.httpbin.org", "http", "/",[&](auto &a, std::exception_ptr e, bool as, auto op) {
       if (e) {
         done_promise.set_exception(e);
       } else {
