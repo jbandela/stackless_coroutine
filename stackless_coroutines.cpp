@@ -318,7 +318,7 @@ auto make_while_true(T &&... t) {
   auto tuple = make_coroutine_tuple(std::forward<T>(t)..., std::move(dummy_terminator));
   auto func =
       [tuple = std::move(tuple) ](
-          auto& context, auto& value) mutable->operation {
+          auto& context, auto& value) ->operation {
 
 	  using context_type = std::decay_t<decltype(context)>;
 
@@ -387,10 +387,6 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
 			  resolver{ io },
 			  socket_{ io }
 		  {}
-		  ~val() {
-			  std::cerr << "Destroyed\n";
-		  }
-
         };
 
 		auto pval = std::make_unique<val>(std::move(host),
@@ -398,7 +394,7 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
 			std::move(url),
 			io);
  
-	auto tuple = 
+	static const auto tuple = 
  stackless_coroutine::make_coroutine_tuple(
 
       [](auto &context, auto &value) {
@@ -475,7 +471,7 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
             return context.do_next();
           }));
 
-	return stackless_coroutine::run(std::move(pval), tuple, std::move(f));
+	return stackless_coroutine::run(std::move(pval), &tuple, std::move(f));
 
 }
 
