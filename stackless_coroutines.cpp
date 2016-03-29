@@ -3,6 +3,7 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <memory>
 
 namespace stackless_coroutine {
 enum class operation {
@@ -103,7 +104,7 @@ struct coroutine_processor<CI, void, Pos, Size, Loop> {
   using helper = coroutine_processor<CI,operation,Pos,Size,Loop>;
 
   template <class Finished, class... T>
-  static operation process(Finished&& f,
+  static operation process(Finished& f,
                            T &&... results) {
 
 	  auto& ci = f.c();
@@ -136,7 +137,7 @@ struct coroutine_processor<CI, operation, Pos, Size, Loop> {
   }
 
   template <class Finished, class... T>
-  static operation process(Finished f,
+  static operation process(Finished& f,
                            T &&... results) {
 
 	  auto& ci = f.c();
