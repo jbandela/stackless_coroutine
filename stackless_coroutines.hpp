@@ -75,9 +75,9 @@ struct coroutine_processor<void, Pos, Size, Loop> {
   template <class Finished, class... T>
   static operation process(Finished &f, T &&... results) {
 
-    auto &tuple = f.tuple();
-    auto &value = f.value();
     coroutine_context<Finished, Pos, Loop> ctx{std::move(f)};
+    auto &tuple = ctx.f().tuple();
+    auto &value = ctx.f().value();
     std::get<Pos>(tuple)(ctx, value, std::forward<T>(results)...);
     return helper::do_next(f, std::integral_constant<std::size_t, Pos + 1>{});
   }
@@ -106,8 +106,8 @@ struct coroutine_processor<operation, Pos, Size, Loop> {
   static operation process(Finished &f, T &&... results) {
 
     coroutine_context<Finished, Pos, Loop> ctx{std::move(f)};
-    operation op =
-        std::get<Pos>(f.tuple())(ctx, f.value(), std::forward<T>(results)...);
+    operation op = std::get<Pos>(ctx.f().tuple())(ctx, ctx.f().value(),
+                                                  std::forward<T>(results)...);
     if (op == operation::_break) {
       return operation::_break;
     } else if (op == operation::_continue) {
@@ -165,7 +165,8 @@ struct coroutine_processor<async_result, Pos, Size, Loop> {
   static operation process(Finished &f, T &&... results) {
     async_context<Finished> ctx{f};
 
-    std::get<Pos>(f.tuple())(ctx, f.value(), std::forward<T>(results)...);
+    std::get<Pos>(ctx.f().tuple())(ctx, ctx.f().value(),
+                                   std::forward<T>(results)...);
     return operation::_suspend;
   }
 };
@@ -255,7 +256,7 @@ auto run(std::unique_ptr<Type, Deleter> v, Tuple t, FinishedTemp f_temp,
 }
 
 template <class... T> auto make_coroutine_tuple(T &&... t) {
-  auto dummy = [](auto &&...) {};
+  auto dummy = [](auto &, auto &) {};
 
   return std::make_tuple(std::forward<T>(t)..., std::move(dummy));
 }
@@ -290,7 +291,7 @@ auto while_true_finished_helper(Finished &f) {
 }
 template <class... T> auto while_true(T &&... t) {
 
-  auto dummy_terminator = [](auto &&...) { return operation::_continue; };
+  auto dummy_terminator = [](auto &, auto &) { return operation::_continue; };
   auto tuple =
       make_coroutine_tuple(std::forward<T>(t)..., std::move(dummy_terminator));
   auto func = [tuple = std::move(tuple)](auto &context, auto &value)
@@ -335,4 +336,3 @@ template <class... T> auto while_true(T &&... t) {
   return func;
 };
 }
-
