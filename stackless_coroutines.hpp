@@ -257,14 +257,19 @@ auto run(std::unique_ptr<Type, Deleter> v, const Tuple *t, FinishedTemp f_temp,
       Finished{v.release(), t, std::move(f_temp)});
 }
 
-template <class... T> auto make_coroutine_tuple(T &&... t) {
-  auto dummy = [](auto &, auto &) {};
+namespace detail {
 
-  return std::make_tuple(std::forward<T>(t)..., std::move(dummy));
+auto dummy_terminator = [](auto &, auto &) {};
+using dummy_terminator_t = std::decay_t<decltype(dummy_terminator)>;
 }
 
-template <class... T> auto make_block(T &&... t) {
-  return make_coroutine_tuple(std::forward<T>(t)...);
+template <class... T>
+auto make_block(T &&... t)
+    -> const std::tuple<std::decay_t<T>..., detail::dummy_terminator_t> * {
+
+  static const std::tuple<std::decay_t<T>..., detail::dummy_terminator_t> tup{
+      std::forward<T>(t)..., detail::dummy_terminator};
+  return &tup;
 }
 
 namespace detail {
@@ -296,14 +301,17 @@ auto while_true_finished_helper(Finished &f) {
     return op;
   }
 }
+
+auto dummy_while_terminator = [](auto &, auto &) {
+  return operation::_continue;
+};
+using dummy_while_terminator_t = std::decay_t<decltype(dummy_while_terminator)>;
 }
 template <class... T> auto while_true(T &&... t) {
 
-  auto dummy_terminator = [](auto &, auto &) { return operation::_continue; };
   auto tuple =
-      make_coroutine_tuple(std::forward<T>(t)..., std::move(dummy_terminator));
-  auto func = [tuple = std::move(tuple)](auto &context, auto &value)
-                  ->operation {
+      make_block(std::forward<T>(t)..., detail::dummy_while_terminator);
+  auto func = [tuple](auto &context, auto &value) -> operation {
 
     using context_type = std::decay_t<decltype(context)>;
 
@@ -327,7 +335,7 @@ template <class... T> auto while_true(T &&... t) {
     };
 
     operation op;
-    op = detail::run_loop(&value, &tuple, finished);
+    op = detail::run_loop(&value, tuple, finished);
 
     if (op == operation::_break) {
       return operation::_next;
@@ -342,15 +350,13 @@ template <class... T> auto while_true(T &&... t) {
 template <class Pred, class Then, class Else>
 auto make_if(Pred pred, Then t, Else e) {
   static const auto p_ = pred;
-  static const auto t_ = t;
-  static const auto e_ = e;
-  static const auto tup = make_block(
-      [](auto &context, auto &value) {
+  auto tup = make_block(
+      [t, e](auto &context, auto &value) {
         using context_t = std::decay_t<decltype(context)>;
         if (p_(value)) {
-          detail::run_if<context_t::is_loop>(&value, &t_, context);
+          detail::run_if<context_t::is_loop>(&value, t, context);
         } else {
-          detail::run_if<context_t::is_loop>(&value, &e_, context);
+          detail::run_if<context_t::is_loop>(&value, e, context);
         }
         return context.do_async();
 
@@ -366,13 +372,13 @@ auto make_if(Pred pred, Then t, Else e) {
 
       );
 
-  auto func = [](auto &context, auto &value) -> operation {
+  auto func = [tup](auto &context, auto &value) -> operation {
 
     using context_t = std::decay_t<decltype(context)>;
 
     return detail::run_if<context_t::is_loop>(
-        &value, &tup, [context](auto &value, std::exception_ptr ep, bool async,
-                                operation op) mutable {
+        &value, tup, [context](auto &value, std::exception_ptr ep, bool async,
+                               operation op) mutable {
           auto &f = context.f();
 
           if (ep && op == operation::_exception) {

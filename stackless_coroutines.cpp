@@ -27,7 +27,7 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
   auto pval = std::make_unique<val>(std::move(host), std::move(service),
                                     std::move(url), io);
 
-  static const auto tuple = stackless_coroutine::make_coroutine_tuple(
+  auto tuple = stackless_coroutine::make_block(
 
       [](auto &context, auto &value) {
         boost::asio::ip::tcp::resolver::query query{value.host, value.service};
@@ -118,7 +118,7 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
 
               ));
 
-  return stackless_coroutine::run(std::move(pval), &tuple, std::move(f));
+  return stackless_coroutine::run(std::move(pval), tuple, std::move(f));
 }
 
 #include <future>
