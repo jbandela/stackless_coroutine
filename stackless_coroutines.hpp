@@ -350,7 +350,7 @@ template <class... T> auto while_true(T &&... t) {
 
 template <class Pred, class Then, class Else>
 auto make_if(Pred pred, Then t, Else e) {
-  static auto tup = make_block(
+  auto tup = make_block(
       [pred,t,e](auto &context, auto &value) {
         using context_t = std::decay_t<decltype(context)>;
         if (pred(value)) {
@@ -372,7 +372,7 @@ auto make_if(Pred pred, Then t, Else e) {
 
       );
 
-  auto func = [](auto &context, auto &value) -> operation {
+  auto func = [tup](auto &context, auto &value) -> operation {
 
     using context_t = std::decay_t<decltype(context)>;
 
