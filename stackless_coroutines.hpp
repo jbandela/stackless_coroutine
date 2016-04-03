@@ -268,7 +268,7 @@ template <class... T>
 auto make_block(T &&... t)
     -> const std::tuple<std::decay_t<T>..., detail::dummy_terminator_t> *{
 
-  static std::tuple<std::decay_t<T>..., detail::dummy_terminator_t> tup{
+  static const std::tuple<std::decay_t<T>..., detail::dummy_terminator_t> tup{
       std::forward<T>(t)..., detail::dummy_terminator};
   return &tup;
 }
@@ -310,9 +310,9 @@ using dummy_while_terminator_t = std::decay_t<decltype(dummy_while_terminator)>;
 }
 template <class... T> auto while_true(T &&... t) {
 
-  static auto tuple =
+  auto tuple =
       make_block(std::forward<T>(t)..., detail::dummy_while_terminator);
-  auto func = [](auto &context, auto &value) -> operation {
+  auto func = [tuple](auto &context, auto &value) -> operation {
 
     using context_type = std::decay_t<decltype(context)>;
 
