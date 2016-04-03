@@ -37,7 +37,8 @@ template <class F, std::size_t Pos> struct dummy_coroutine_context {
   operation do_continue() { return operation::_continue; };
   operation do_next() { return operation::_next; };
   template <class... T> async_result do_async() { return async_result{}; }
-  F &f();
+  F &f(){return *f_;}
+  F* f_;
   dummy_coroutine_context() {}
   dummy_coroutine_context(dummy_coroutine_context &) {}
   dummy_coroutine_context(dummy_coroutine_context &&) {}
@@ -349,11 +350,10 @@ template <class... T> auto while_true(T &&... t) {
 
 template <class Pred, class Then, class Else>
 auto make_if(Pred pred, Then t, Else e) {
-  static const auto p_ = pred;
   auto tup = make_block(
-      [t, e](auto &context, auto &value) {
+      [pred,t, e](auto &context, auto &value) {
         using context_t = std::decay_t<decltype(context)>;
-        if (p_(value)) {
+        if (pred(value)) {
           detail::run_if<context_t::is_loop>(&value, t, context);
         } else {
           detail::run_if<context_t::is_loop>(&value, e, context);
