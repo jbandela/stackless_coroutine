@@ -118,7 +118,7 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
 
               ));
 
-  return stackless_coroutine::run(std::move(pval), &tuple, std::move(f));
+  return stackless_coroutine::run(std::move(pval), tuple, std::move(f));
 }
 
 #include <future>

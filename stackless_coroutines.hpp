@@ -266,10 +266,11 @@ using dummy_terminator_t = std::decay_t<decltype(dummy_terminator)>;
 
 template <class... T>
 auto make_block(T &&... t)
-    -> std::tuple<std::decay_t<T>..., detail::dummy_terminator_t>{
+    -> const std::tuple<std::decay_t<T>..., detail::dummy_terminator_t> *{
 
-  return std::tuple<std::decay_t<T>..., detail::dummy_terminator_t> {
+  static std::tuple<std::decay_t<T>..., detail::dummy_terminator_t> tup{
       std::forward<T>(t)..., detail::dummy_terminator};
+  return &tup;
 }
 
 namespace detail {
@@ -335,7 +336,7 @@ template <class... T> auto while_true(T &&... t) {
     };
 
     operation op;
-    op = detail::run_loop(&value, &tuple, finished);
+    op = detail::run_loop(&value, tuple, finished);
 
     if (op == operation::_break) {
       return operation::_next;
@@ -353,9 +354,9 @@ auto make_if(Pred pred, Then t, Else e) {
       [pred,t,e](auto &context, auto &value) {
         using context_t = std::decay_t<decltype(context)>;
         if (pred(value)) {
-          detail::run_if<context_t::is_loop>(&value, &t, context);
+          detail::run_if<context_t::is_loop>(&value, t, context);
         } else {
-          detail::run_if<context_t::is_loop>(&value, &e, context);
+          detail::run_if<context_t::is_loop>(&value, e, context);
         }
         return context.do_async();
 
@@ -376,7 +377,7 @@ auto make_if(Pred pred, Then t, Else e) {
     using context_t = std::decay_t<decltype(context)>;
 
     return detail::run_if<context_t::is_loop>(
-        &value, &tup, [context](auto &value, std::exception_ptr ep, bool async,
+        &value, tup, [context](auto &value, std::exception_ptr ep, bool async,
                                operation op) mutable {
           auto &f = context.f();
 
