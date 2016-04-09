@@ -1,5 +1,6 @@
 #pragma once
 #include <exception>
+#include <stdexcept>
 #include <memory>
 #include <tuple>
 #include <type_traits>
@@ -40,7 +41,7 @@ template <class F, std::size_t Pos> struct dummy_coroutine_context {
   F &f(){return *f_;}
   F* f_;
   dummy_coroutine_context() {}
-  dummy_coroutine_context(dummy_coroutine_context &) {}
+  dummy_coroutine_context(const dummy_coroutine_context &) {}
   dummy_coroutine_context(dummy_coroutine_context &&) {}
   template <class T> dummy_coroutine_context(T &) {}
 
