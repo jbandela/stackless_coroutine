@@ -32,7 +32,15 @@ static_assert(static_cast<std::size_t>(operation::_size) + 1 ==
               "stackless_coroutine::operations does not match size");
 
 namespace detail {
-struct async_result {};
+struct async_result {
+	operation op = operation::_suspend;
+
+	async_result() {}
+	async_result(operation op):op(op) {}
+
+};
+
+
 
 template <class F, std::size_t Pos> struct dummy_coroutine_context {
 
@@ -42,7 +50,8 @@ template <class F, std::size_t Pos> struct dummy_coroutine_context {
   operation do_break() { return operation::_break; }
   operation do_continue() { return operation::_continue; };
   operation do_next() { return operation::_next; };
-  template <class... T> async_result do_async() { return async_result{}; }
+  async_result do_async() { return async_result{}; }
+  async_result do_async_return() { return async_result{}; }
   F &f(){return *f_;}
   F* f_;
   dummy_coroutine_context() {}
@@ -156,7 +165,8 @@ struct coroutine_processor<async_result, Pos, Size, Loop, If> {
     async_context(Finished f) : base_t{std::move(f)} {}
     using base_t::f;
 
-    async_result do_async() { return async_result{}; }
+    async_result do_async() { return async_result{operation::_suspend}; }
+    async_result do_async_return() { return async_result{operation::_return}; }
     template <class... A> auto operator()(A &&... a) {
       using DC = dummy_coroutine_context<Finished, Pos + 1>;
       using next_return = decltype(std::get<Pos + 1>(f().tuple())(
@@ -186,9 +196,9 @@ struct coroutine_processor<async_result, Pos, Size, Loop, If> {
   static operation process(Finished &f, T &&... results) {
     async_context<Finished> ctx{f};
 
-    std::get<Pos>(ctx.f().tuple())(ctx, ctx.f().value(),
+    auto r = std::get<Pos>(ctx.f().tuple())(ctx, ctx.f().value(),
                                    std::forward<T>(results)...);
-    return operation::_suspend;
+    return r.op;
   }
 };
 
