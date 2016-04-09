@@ -16,7 +16,6 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
     boost::asio::ip::tcp::socket socket_;
     std::string request_string;
     std::string current;
-    bool break_loop = false;
 
     val(std::string host, std::string service, std::string url,
         boost::asio::io_service &io)
@@ -79,7 +78,7 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
 
       },
       // Read in a loop
-      stackless_coroutine::while_true(
+      stackless_coroutine::make_while_true(
           [](auto &context, auto &value) { value.current.resize(20); },
 
           [](auto &context, auto &value) {
@@ -93,30 +92,17 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
             if (ec) {
               if (ec != boost::asio::error::eof)
                 std::cerr << ec.message();
-              value.break_loop = true;
+              return context.do_break();
+            } else {
+
+              value.current.resize(n);
+              std::cout << value.current;
+              return context.do_next();
             }
-			else {
 
+          }
 
-                value.current.resize(n);
-			}
-
-          },
-          stackless_coroutine::make_if(
-              [](val &value) { return value.break_loop; },
-              stackless_coroutine::make_block([](auto &context, auto &value) {
-                return context.do_break();
-              }),
-              stackless_coroutine::make_block([](auto &context, val &value) {
-                std::cout << value.current;
-
-              })
-
-                  )
-
-
-
-              ));
+          ));
 
   return stackless_coroutine::run(std::move(pval), tuple, std::move(f));
 }

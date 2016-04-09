@@ -309,7 +309,7 @@ auto dummy_while_terminator = [](auto &, auto &) {
 };
 using dummy_while_terminator_t = std::decay_t<decltype(dummy_while_terminator)>;
 }
-template <class... T> auto while_true(T &&... t) {
+template <class... T> auto make_while_true(T &&... t) {
 
   auto tuple =
       make_block(std::forward<T>(t)..., detail::dummy_while_terminator);
@@ -394,5 +394,17 @@ auto make_if(Pred pred, Then t, Else e) {
 
   };
   return func;
+}
+
+template<class P,class... T>
+auto make_while(P p, T&&... t) {
+	return make_while_true([=](auto& context, auto& value) {
+		if (p(value)) {
+			return context.do_next();
+		}
+		else {
+			return context.do_break();
+		}
+	},t...);
 }
 }

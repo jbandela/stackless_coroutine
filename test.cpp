@@ -54,7 +54,7 @@ TEST_CASE("Simple async", "[stackless]") {
 TEST_CASE("while async", "[stackless]") {
   auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
       [](auto &context, auto &value) { value.return_value = 1; },
-      stackless_coroutine::while_true(
+      stackless_coroutine::make_while_true(
           [](auto &context, auto &value) {
             if (value.return_value < 5)
               return context.do_next();
@@ -75,7 +75,7 @@ TEST_CASE("while async", "[stackless]") {
 TEST_CASE("while if async", "[stackless]") {
   auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
       [](auto &context, auto &value) { value.return_value = 1; },
-      stackless_coroutine::while_true(
+      stackless_coroutine::make_while_true(
           stackless_coroutine::make_if(
               [](auto &value) { return value.return_value < 5; },
               stackless_coroutine::make_block(
@@ -106,7 +106,7 @@ TEST_CASE("inner and outer while if async", "[stackless]") {
         value.inner = 0;
         value.outer = 0;
       },
-      stackless_coroutine::while_true(
+      stackless_coroutine::make_while_true(
           stackless_coroutine::make_if(
               [](auto &value) { return value.outer < 5; },
               stackless_coroutine::make_block(
@@ -122,7 +122,7 @@ TEST_CASE("inner and outer while if async", "[stackless]") {
             value.outer += aval;
             value.inner = 0;
           },
-          stackless_coroutine::while_true(
+          stackless_coroutine::make_while_true(
               stackless_coroutine::make_if(
                   [](auto &value) { return value.inner < 7; },
                   stackless_coroutine::make_block(
@@ -150,7 +150,7 @@ TEST_CASE("inner and outer while if async with early return", "[stackless]") {
         value.inner = 0;
         value.outer = 0;
       },
-      stackless_coroutine::while_true(
+      stackless_coroutine::make_while_true(
           stackless_coroutine::make_if(
               [](auto &value) { return value.outer < 5; },
               stackless_coroutine::make_block(
@@ -166,7 +166,7 @@ TEST_CASE("inner and outer while if async with early return", "[stackless]") {
             value.outer += aval;
             value.inner = 0;
           },
-          stackless_coroutine::while_true(
+          stackless_coroutine::make_while_true(
               stackless_coroutine::make_if(
                   [](auto &value) { return value.inner < 7; },
                   stackless_coroutine::make_block(
@@ -197,3 +197,43 @@ TEST_CASE("inner and outer while if async with early return", "[stackless]") {
                       )))));
   REQUIRE(f.get() == 29);
 }
+TEST_CASE("inner and outer while if async with early return using make_while instead of make_while_true", "[stackless]") {
+  auto f = get_future<value_temp_t<int>>(stackless_coroutine::make_block(
+      [](auto &context, auto &value) {
+        value.return_value = 0;
+        value.inner = 0;
+        value.outer = 0;
+      },
+      stackless_coroutine::make_while(
+              [](auto &value) { return value.outer < 5; },
+         [](auto &context, auto &value) {
+            do_thread([context]() mutable { context(1); });
+            return context.do_async();
+          },
+          [](auto &context, auto &value, int aval) {
+            value.outer += aval;
+            value.inner = 0;
+          },
+          stackless_coroutine::make_while(
+                  [](auto &value) { return value.inner < 7; },
+             [](auto &context, auto &value) {
+                do_thread([context]() mutable { context(1); });
+                return context.do_async();
+              },
+              [](auto &context, auto &value, int aval) {
+                value.return_value += aval;
+                value.inner += aval;
+              },
+              stackless_coroutine::make_if(
+                  [](auto &value) { return value.return_value == 29; },
+                  stackless_coroutine::make_block(
+                      [](auto &context, auto &value) {
+                        return context.do_return();
+                      }),
+                  stackless_coroutine::make_block(
+                      [](auto &context, auto &value) {})
+
+                      )))));
+  REQUIRE(f.get() == 29);
+}
+
