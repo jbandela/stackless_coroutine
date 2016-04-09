@@ -126,7 +126,7 @@ struct coroutine_processor<operation, Pos, Size, Loop, If> {
       if (If) {
         return op;
       } else {
-        return do_next(f, std::integral_constant<std::size_t, 0>{});
+        return do_next(f, std::integral_constant<std::size_t, Loop?0:Size>{});
       }
 
     } else if (op == operation::_next) {
@@ -256,7 +256,7 @@ auto run(std::unique_ptr<Type, Deleter> v, const Tuple *t, FinishedTemp f_temp,
                                             std::unique_ptr<Type, Deleter>>;
 
   return detail::run_helper<false, false>(
-      Finished{v.release(), t, std::move(f_temp)});
+      Finished{v.release(), t, std::move(f_temp)},std::forward<A>(a)...);
 }
 
 namespace detail {
