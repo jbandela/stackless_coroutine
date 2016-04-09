@@ -26,7 +26,6 @@ struct value_t {
   tcp::socket socket_;
   boost::asio::streambuf request_;
   boost::asio::streambuf response_;
-  tcp::resolver::iterator endpoint_iterator;
   value_t(boost::asio::io_service &io_service)
       : resolver_(io_service), socket_(io_service) {}
 };
