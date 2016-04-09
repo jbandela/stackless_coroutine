@@ -78,9 +78,8 @@ TEST_CASE("while if async", "[stackless]") {
       stackless_coroutine::while_true(
           stackless_coroutine::make_if(
               [](auto &value) { return value.return_value < 5; },
-              stackless_coroutine::make_block([](auto &context, auto &value) {
-                return context.do_next();
-              }),
+              stackless_coroutine::make_block(
+                  [](auto &context, auto &value) { return context.do_next(); }),
               stackless_coroutine::make_block([](auto &context, auto &value) {
                 return context.do_break();
               })),
@@ -92,4 +91,49 @@ TEST_CASE("while if async", "[stackless]") {
             value.return_value += aval;
           })));
   REQUIRE(f.get() == 5);
+}
+
+template <class R> struct value_temp_t {
+  R return_value;
+  R inner;
+  R outer;
+  std::promise<R> p;
+};
+TEST_CASE("inner and outer while if async", "[stackless]") {
+  auto f = get_future<value_temp_t<int>>(stackless_coroutine::make_block(
+	  [](auto &context, auto &value) { value.return_value = 0;value.inner = 0; value.outer = 0; },
+      stackless_coroutine::while_true(
+          stackless_coroutine::make_if(
+              [](auto &value) { return value.outer < 5; },
+              stackless_coroutine::make_block(
+                  [](auto &context, auto &value) { return context.do_next(); }),
+              stackless_coroutine::make_block([](auto &context, auto &value) {
+                return context.do_break();
+              })),
+          [](auto &context, auto &value) {
+            do_thread([context]() mutable { context(1); });
+            return context.do_async();
+          },
+          [](auto &context, auto &value, int aval) {
+			value.outer += aval;
+			value.inner = 0;
+          },
+		stackless_coroutine::while_true(
+          stackless_coroutine::make_if(
+              [](auto &value) { return value.inner < 7; },
+              stackless_coroutine::make_block(
+                  [](auto &context, auto &value) { return context.do_next(); }),
+              stackless_coroutine::make_block([](auto &context, auto &value) {
+                return context.do_break();
+              })),
+          [](auto &context, auto &value) {
+            do_thread([context]() mutable { context(1); });
+            return context.do_async();
+          },
+          [](auto &context, auto &value, int aval) {
+            value.return_value += aval;
+			value.inner += aval;
+          })
+			  )));
+  REQUIRE(f.get() == 35);
 }
