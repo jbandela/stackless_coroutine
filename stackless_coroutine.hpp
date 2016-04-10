@@ -5,8 +5,8 @@
 
 #pragma once
 #include <exception>
-#include <stdexcept>
 #include <memory>
+#include <stdexcept>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -33,14 +33,11 @@ static_assert(static_cast<std::size_t>(operation::_size) + 1 ==
 
 namespace detail {
 struct async_result {
-	operation op = operation::_suspend;
+  operation op = operation::_suspend;
 
-	async_result() {}
-	async_result(operation op):op(op) {}
-
+  async_result() {}
+  async_result(operation op) : op(op) {}
 };
-
-
 
 template <class F, std::size_t Pos> struct dummy_coroutine_context {
 
@@ -54,8 +51,8 @@ template <class F, std::size_t Pos> struct dummy_coroutine_context {
   async_result do_async_return() { return async_result{}; }
   async_result do_async_break() { return async_result{}; }
   async_result do_async_continue() { return async_result{}; }
-  F &f(){return *f_;}
-  F* f_;
+  F &f() { return *f_; }
+  F *f_;
   dummy_coroutine_context() {}
   dummy_coroutine_context(const dummy_coroutine_context &) {}
   dummy_coroutine_context(dummy_coroutine_context &&) {}
@@ -76,8 +73,9 @@ template <bool If> struct loop_base<true, If> {
   operation do_break() { return operation::_break; }
   operation do_continue() { return operation::_continue; }
   async_result do_async_break() { return async_result{operation::_break}; }
-  async_result do_async_continue() { return async_result{operation::_continue}; }
- 
+  async_result do_async_continue() {
+    return async_result{operation::_continue};
+  }
 };
 
 template <class Finished, size_t Pos, bool Loop, bool If>
@@ -139,23 +137,17 @@ struct coroutine_processor<operation, Pos, Size, Loop, If> {
     coroutine_context<Finished, Pos, Loop, If> ctx{std::move(f)};
     operation op = std::get<Pos>(ctx.f().tuple())(ctx, ctx.f().value(),
                                                   std::forward<T>(results)...);
-    if (op == operation::_break) {
-      return operation::_break;
-    } else if (op == operation::_continue) {
+    if (op == operation::_continue) {
       if (If) {
         return op;
       } else {
-        return do_next(f, std::integral_constant<std::size_t, Loop?0:Size>{});
+        return do_next(f, std::integral_constant < std::size_t,
+                       Loop ? 0 : Size > {});
       }
-
     } else if (op == operation::_next) {
       return do_next(f, std::integral_constant<std::size_t, Pos + 1>{});
-    } else if (op == operation::_return) {
-      return operation::_return;
-    } else if (op == operation::_suspend) {
-      return operation::_suspend;
     }
-    throw std::logic_error{"Invalid stackless_coroutine::operation"};
+    return op;
   }
 };
 
@@ -202,7 +194,7 @@ struct coroutine_processor<async_result, Pos, Size, Loop, If> {
     async_context<Finished> ctx{f};
 
     auto r = std::get<Pos>(ctx.f().tuple())(ctx, ctx.f().value(),
-                                   std::forward<T>(results)...);
+                                            std::forward<T>(results)...);
     return r.op;
   }
 };
@@ -276,7 +268,7 @@ auto run(std::unique_ptr<Type, Deleter> v, const Tuple *t, FinishedTemp f_temp,
                                             std::unique_ptr<Type, Deleter>>;
 
   return detail::run_helper<false, false>(
-      Finished{v.release(), t, std::move(f_temp)},std::forward<A>(a)...);
+      Finished{v.release(), t, std::move(f_temp)}, std::forward<A>(a)...);
 }
 
 namespace detail {
@@ -287,7 +279,7 @@ using dummy_terminator_t = std::decay_t<decltype(dummy_terminator)>;
 
 template <class... T>
 auto make_block(T &&... t)
-    -> const std::tuple<std::decay_t<T>..., detail::dummy_terminator_t> *{
+    -> const std::tuple<std::decay_t<T>..., detail::dummy_terminator_t> * {
 
   static const std::tuple<std::decay_t<T>..., detail::dummy_terminator_t> tup{
       std::forward<T>(t)..., detail::dummy_terminator};
@@ -339,19 +331,12 @@ template <class... T> auto make_while_true(T &&... t) {
 
     auto finished = [f = context.f()](auto &value, std::exception_ptr ep,
                                       bool async, operation op) mutable {
-      if (async) {
-        if (ep && op == operation::_exception) {
-          (f)(f.value(), ep, true, operation::_exception);
-        } else if (op == operation::_break) {
-          detail::while_true_finished_helper<1, context_type>(f);
-        } else if (op == operation::_return) {
-
-          (f)(f.value(), ep, true, operation::_return);
-        }
-
-        // for operation::_suspend just return the op
-        // We will not get back _done because of the dummy_terminator, and
-        // _continue will get handled by the regular processors
+      if (ep && op == operation::_exception) {
+        (f)(f.value(), ep, true, operation::_exception);
+      } else if (op == operation::_break) {
+        detail::while_true_finished_helper<1, context_type>(f);
+      } else if (op == operation::_return) {
+        (f)(f.value(), ep, async, operation::_return);
       }
       return op;
     };
@@ -372,7 +357,7 @@ template <class... T> auto make_while_true(T &&... t) {
 template <class Pred, class Then, class Else>
 auto make_if(Pred pred, Then t, Else e) {
   auto tup = make_block(
-      [pred,t,e](auto &context, auto &value) {
+      [pred, t, e](auto &context, auto &value) {
         using context_t = std::decay_t<decltype(context)>;
         if (pred(value)) {
           detail::run_if<context_t::is_loop>(&value, t, context);
@@ -416,15 +401,15 @@ auto make_if(Pred pred, Then t, Else e) {
   return func;
 }
 
-template<class P,class... T>
-auto make_while(P p, T&&... t) {
-	return make_while_true([=](auto& context, auto& value) {
-		if (p(value)) {
-			return context.do_next();
-		}
-		else {
-			return context.do_break();
-		}
-	},t...);
+template <class P, class... T> auto make_while(P p, T &&... t) {
+  return make_while_true(
+      [=](auto &context, auto &value) {
+        if (p(value)) {
+          return context.do_next();
+        } else {
+          return context.do_break();
+        }
+      },
+      t...);
 }
 }
