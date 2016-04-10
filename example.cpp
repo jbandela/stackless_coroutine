@@ -126,7 +126,7 @@ int main() {
 
   auto func = [&]() {
     do_coroutine(io, "www.httpbin.org", "http", "/",
-                 [&](auto &a, std::exception_ptr e, bool as, auto op) {
+                 [&](auto &a, std::exception_ptr e, auto op) {
                    if (e) {
                      done_promise.set_exception(e);
                    } else {

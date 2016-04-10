@@ -177,13 +177,13 @@ struct coroutine_processor<async_result, Pos, Size, Loop, If> {
       } catch (...) {
 
         auto ep = std::current_exception();
-        f()(f().value(), ep, true, operation::_exception);
+        f()(f().value(), ep, operation::_exception);
         return operation::_done;
       };
 
       if (op == operation::_done || op == operation::_return ||
           op == operation::_break) {
-        f()(f().value(), nullptr, true, op);
+        f()(f().value(), nullptr, op);
       }
       return op;
     }
@@ -230,13 +230,13 @@ auto run_helper(Finished f, A &&... a) {
                              If>::process(f, std::forward<A>(a)...);
   } catch (...) {
     auto ep = std::current_exception();
-    f(f.value(), ep, false, operation::_exception);
+    f(f.value(), ep, operation::_exception);
     return operation::_exception;
   };
 
   if (op == operation::_done || op == operation::_return ||
       (If && op == operation::_continue) || (If && op == operation::_break)) {
-    f(f.value(), nullptr, false, op);
+    f(f.value(), nullptr, op);
   }
   return op;
 }
@@ -304,12 +304,12 @@ auto while_true_finished_helper(Finished &f) {
                              Context::is_if>::process(f);
   } catch (...) {
     auto ep = std::current_exception();
-    (f)(f.value(), ep, true, operation::_exception);
+    (f)(f.value(), ep, operation::_exception);
     return operation::_exception;
   };
   if (op == operation::_done || op == operation::_return ||
       op == operation::_break) {
-    (f)(f.value(), nullptr, true, op);
+    (f)(f.value(), nullptr, op);
     return op;
   } else {
     return op;
@@ -330,25 +330,20 @@ template <class... T> auto make_while_true(T &&... t) {
     using context_type = std::decay_t<decltype(context)>;
 
     auto finished = [f = context.f()](auto &value, std::exception_ptr ep,
-                                      bool async, operation op) mutable {
+                                      operation op) mutable {
       if (ep && op == operation::_exception) {
-        (f)(f.value(), ep, true, operation::_exception);
+        (f)(f.value(), ep, operation::_exception);
       } else if (op == operation::_break) {
         detail::while_true_finished_helper<1, context_type>(f);
       } else if (op == operation::_return) {
-        (f)(f.value(), ep, async, operation::_return);
+        (f)(f.value(), ep, operation::_return);
       }
       return op;
     };
 
-    operation op;
-    op = detail::run_loop(&value, tuple, finished);
+    detail::run_loop(&value, tuple, finished);
+    return operation::_suspend;
 
-    if (op == operation::_break) {
-      return operation::_next;
-    } else {
-      return op;
-    }
   };
 
   return func;
@@ -367,12 +362,11 @@ auto make_if(Pred pred, Then t, Else e) {
         return context.do_async();
 
       },
-      [](auto &context, auto &value, auto &a, std::exception_ptr e, bool as,
-         auto op) {
+      [](auto &context, auto &value, auto &a, std::exception_ptr e, auto op) {
         if (op == operation::_done)
           return operation::_next;
         if (op == operation::_exception && e)
-          context.f()(value, e, as, operation::_exception);
+          context.f()(value, e, operation::_exception);
         return op;
       }
 
@@ -383,15 +377,15 @@ auto make_if(Pred pred, Then t, Else e) {
     using context_t = std::decay_t<decltype(context)>;
 
     return detail::run_if<context_t::is_loop>(
-        &value, tup, [context](auto &value, std::exception_ptr ep, bool async,
-                               operation op) mutable {
+        &value, tup,
+        [context](auto &value, std::exception_ptr ep, operation op) mutable {
           auto &f = context.f();
 
           if (ep && op == operation::_exception) {
-            f(value, ep, async, op);
+            f(value, ep, op);
           } else if (op == operation::_break || op == operation::_continue ||
                      op == operation::_return) {
-            f(value, ep, async, op);
+            f(value, ep, op);
           } else if (op == operation::_done) {
             detail::while_true_finished_helper<1, context_t>(f);
           }

@@ -20,27 +20,82 @@ template <class F> void do_thread(F f) {
 template <class R> struct value_t {
   R return_value;
   std::promise<R> p;
+  int finished_count = 0;
 };
 
 template <class V, class T> auto get_future(T t) {
   auto p = std::make_unique<V>();
   auto fut = p->p.get_future();
-  stackless_coroutine::run(std::move(p), t,
-                           [](V &value, std::exception_ptr ep, bool async,
-                              stackless_coroutine::operation op) {
-                             if (ep) {
-                               value.p.set_exception(ep);
-                             } else {
-                               value.p.set_value(value.return_value);
-                             }
-                           });
+  stackless_coroutine::run(
+      std::move(p), t,
+      [](V &value, std::exception_ptr ep, stackless_coroutine::operation op) {
+        ++value.finished_count;
+        REQUIRE(value.finished_count == 1);
+        if (ep) {
+          value.p.set_exception(ep);
+        } else {
+          value.p.set_value(value.return_value);
+        }
+      });
   return fut;
+}
+TEST_CASE("Simple test while", "[stackless]") {
+  auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
+      [](auto &context, auto &value) { value.return_value = 1; },
+      stackless_coroutine::make_while_true([](auto &context, auto &value) {
+        ++value.return_value;
+        return context.do_return();
+      })
+
+          ));
+  REQUIRE(f.get() == 2);
+}
+
+TEST_CASE("Simple test if while", "[stackless]") {
+  auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
+      [](auto &context, auto &value) { value.return_value = 1; },
+      stackless_coroutine::make_while_true(
+          [](auto &context, auto &value) {
+            ++value.return_value;
+            return context.do_return();
+          },
+          stackless_coroutine::make_if(
+              [](auto &value) { return value.return_value == 1; },
+              stackless_coroutine::make_block([](auto &context, auto &value) {
+                value.return_value = 2;
+                return context.do_return();
+              }),
+              stackless_coroutine::make_block([](auto &context, auto &value) {
+                value.return_value = 3;
+                return context.do_return();
+              })))
+
+          ));
+  REQUIRE(f.get() == 2);
 }
 
 TEST_CASE("Simple test", "[stackless]") {
   auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
       [](auto &context, auto &value) { value.return_value = 1; }));
   REQUIRE(f.get() == 1);
+}
+TEST_CASE("Simple test if", "[stackless]") {
+  auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
+      [](auto &context, auto &value) { value.return_value = 1; },
+
+      stackless_coroutine::make_if(
+          [](auto &value) { return value.return_value == 1; },
+          stackless_coroutine::make_block([](auto &context, auto &value) {
+            value.return_value = 2;
+            return context.do_return();
+          }),
+          stackless_coroutine::make_block([](auto &context, auto &value) {
+            value.return_value = 3;
+            return context.do_return();
+          }))
+
+          ));
+  REQUIRE(f.get() == 2);
 }
 
 TEST_CASE("Simple async", "[stackless]") {
@@ -103,6 +158,7 @@ template <class R> struct value_temp_t {
   R inner;
   R outer;
   std::promise<R> p;
+  int finished_count = 0;
 };
 TEST_CASE("inner and outer while if async", "[stackless]") {
   auto f = get_future<value_temp_t<int>>(stackless_coroutine::make_block(
@@ -289,61 +345,60 @@ TEST_CASE("inner and outer while if async with early return using make_while "
   REQUIRE(f.get() == 29);
 }
 
-TEST_CASE("inner and outer while if async with early return using exception using make_while "
-	"instead of make_while_true, but use do_async_break",
-	"[stackless]") {
+TEST_CASE("inner and outer while if async with early return using exception "
+          "using make_while "
+          "instead of make_while_true, but use do_async_break",
+          "[stackless]") {
 
-	int val = -1;
-	auto f = get_future<value_temp_t<int>>(stackless_coroutine::make_block(
-		[](auto &context, auto &value) {
-		value.return_value = 0;
-		value.inner = 0;
-		value.outer = 0;
-	},
-		stackless_coroutine::make_while(
-			[](auto &value) { return value.outer < 5; },
-			[](auto &context, auto &value) {
-		do_thread([context]() mutable { context(1); });
-		return context.do_async();
-	},
-			[](auto &context, auto &value, int aval) {
-		value.outer += aval;
-		value.inner = 0;
-	},
-		stackless_coroutine::make_while_true(
-			[](auto &context, auto &value) {
-		if (value.inner < 7) {
-			do_thread([context]() mutable { context(1); });
-			return context.do_async();
-		}
-		else {
-			return context.do_async_break();
-		}
-	},
-			[](auto &context, auto &value, int aval) {
-		value.return_value += aval;
-		value.inner += aval;
-	},
-		stackless_coroutine::make_if(
-			[](auto &value) { return value.return_value == 29; },
-			stackless_coroutine::make_block(
-				[](auto &context, auto &value) {
-				
-		std::string message = "Exception thrown. value: " + std::to_string(value.return_value);
-		throw std::runtime_error(message);
-	}),
-			stackless_coroutine::make_block(
-				[](auto &context, auto &value) {})
+  int val = -1;
+  auto f = get_future<value_temp_t<int>>(stackless_coroutine::make_block(
+      [](auto &context, auto &value) {
+        value.return_value = 0;
+        value.inner = 0;
+        value.outer = 0;
+      },
+      stackless_coroutine::make_while(
+          [](auto &value) { return value.outer < 5; },
+          [](auto &context, auto &value) {
+            do_thread([context]() mutable { context(1); });
+            return context.do_async();
+          },
+          [](auto &context, auto &value, int aval) {
+            value.outer += aval;
+            value.inner = 0;
+          },
+          stackless_coroutine::make_while_true(
+              [](auto &context, auto &value) {
+                if (value.inner < 7) {
+                  do_thread([context]() mutable { context(1); });
+                  return context.do_async();
+                } else {
+                  return context.do_async_break();
+                }
+              },
+              [](auto &context, auto &value, int aval) {
+                value.return_value += aval;
+                value.inner += aval;
+              },
+              stackless_coroutine::make_if(
+                  [](auto &value) { return value.return_value == 29; },
+                  stackless_coroutine::make_block([](auto &context,
+                                                     auto &value) {
 
-		)))));
-	try {
-		f.get();
-	}
-	catch (std::exception& e) {
+                    std::string message = "Exception thrown. value: " +
+                                          std::to_string(value.return_value);
+                    throw std::runtime_error(message);
+                  }),
+                  stackless_coroutine::make_block(
+                      [](auto &context, auto &value) {})
 
-		REQUIRE(e.what() == std::string("Exception thrown. value: 29"));
-		return;
-	}
-	REQUIRE(1 == 2);
+                      )))));
+  try {
+    f.get();
+  } catch (std::exception &e) {
 
+    REQUIRE(e.what() == std::string("Exception thrown. value: 29"));
+    return;
+  }
+  REQUIRE(1 == 2);
 }

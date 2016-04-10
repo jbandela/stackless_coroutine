@@ -154,14 +154,14 @@ void get(boost::asio::io_service &io_service, const std::string &server,
 
           );
 
-  stackless_coroutine::run(std::move(pv), t,
-                           [](auto &value, std::exception_ptr ep, bool,
-                              stackless_coroutine::operation) {
-                             std::cout << "\n**Finished**\n";
-                             if (ep)
-                               std::rethrow_exception(ep);
-                           },
-                           server, path);
+  stackless_coroutine::run(
+      std::move(pv), t,
+      [](auto &value, std::exception_ptr ep, stackless_coroutine::operation) {
+        std::cout << "\n**Finished**\n";
+        if (ep)
+          std::rethrow_exception(ep);
+      },
+      server, path);
 }
 int main(int argc, char *argv[]) {
   try {
