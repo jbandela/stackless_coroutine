@@ -52,6 +52,8 @@ template <class F, std::size_t Pos> struct dummy_coroutine_context {
   operation do_next() { return operation::_next; };
   async_result do_async() { return async_result{}; }
   async_result do_async_return() { return async_result{}; }
+  async_result do_async_break() { return async_result{}; }
+  async_result do_async_continue() { return async_result{}; }
   F &f(){return *f_;}
   F* f_;
   dummy_coroutine_context() {}
@@ -73,6 +75,9 @@ template <bool If> struct loop_base<true, If> {
   enum { is_if = If };
   operation do_break() { return operation::_break; }
   operation do_continue() { return operation::_continue; }
+  async_result do_async_break() { return async_result{operation::_break}; }
+  async_result do_async_continue() { return async_result{operation::_continue}; }
+ 
 };
 
 template <class Finished, size_t Pos, bool Loop, bool If>
