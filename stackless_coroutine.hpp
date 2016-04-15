@@ -4,6 +4,7 @@
 //          http://www.boost.org/LICENSE_1_0.txt)
 
 #pragma once
+#include <algorithm>
 #include <array>
 #include <exception>
 #include <memory>
@@ -415,12 +416,13 @@ auto dummy_while_terminator = [](auto &, auto &) {
 };
 using dummy_while_terminator_t = std::decay_t<decltype(dummy_while_terminator)>;
 }
-template <class... T> auto make_while_true(T &&... t) {
+template <class Tuple> struct make_while_func_t {
+  Tuple tuple;
 
-  auto tuple =
-      make_block(std::forward<T>(t)..., detail::dummy_while_terminator);
-  auto func = [tuple](auto &context, auto &value) -> operation {
+  using tuple_t = std::remove_pointer_t<Tuple>;
 
+  template <class Context, class Value>
+  auto operator()(Context &context, Value &value) const {
     using context_type = std::decay_t<decltype(context)>;
 
     auto finished = [f = context.f()](auto &value, std::exception_ptr ep,
@@ -437,10 +439,62 @@ template <class... T> auto make_while_true(T &&... t) {
 
     detail::run_loop<context_type::level + 1>(&value, tuple, finished);
     return operation::_suspend;
+  }
+};
+template <class... T> auto make_while_true(T &&... t) {
 
-  };
+  auto tuple =
+      make_block(std::forward<T>(t)..., detail::dummy_while_terminator);
+  using mwf_t = make_while_func_t<decltype(tuple)>;
+  mwf_t func{tuple};
+  // auto func = [tuple](auto &context, auto &value) -> operation {
+
+  //  using context_type = std::decay_t<decltype(context)>;
+
+  //  auto finished = [f = context.f()](auto &value, std::exception_ptr ep,
+  //                                    operation op) mutable {
+  //    if (ep && op == operation::_exception) {
+  //      (f)(f.value(), ep, operation::_exception);
+  //    } else if (op == operation::_break) {
+  //      detail::while_true_finished_helper<1, context_type>(f);
+  //    } else if (op == operation::_return) {
+  //      (f)(f.value(), ep, operation::_return);
+  //    }
+  //    return op;
+  //  };
+
+  //  detail::run_loop<context_type::level + 1>(&value, tuple, finished);
+  //  return operation::_suspend;
+
+  //};
 
   return func;
+};
+
+template <class Tuple> struct make_if_func_t {
+  Tuple tuple;
+  using tuple_t = std::remove_pointer_t<Tuple>;
+
+  template <class Context, class Value>
+  auto operator()(Context &context, Value &value) const {
+
+    using context_t = std::decay_t<decltype(context)>;
+
+    return detail::run_if<context_t::is_loop, context_t::level + 1>(
+        &value, tuple,
+        [context](auto &value, std::exception_ptr ep, operation op) mutable {
+          auto &f = context.f();
+
+          if (ep && op == operation::_exception) {
+            f(value, ep, op);
+          } else if (op == operation::_break || op == operation::_continue ||
+                     op == operation::_return) {
+            f(value, ep, op);
+          } else if (op == operation::_done) {
+            detail::while_true_finished_helper<1, context_t>(f);
+          }
+        });
+  };
 };
 
 template <class Pred, class Then, class Else>
@@ -468,26 +522,28 @@ auto make_if(Pred pred, Then t, Else e) {
 
       );
 
-  auto func = [tup](auto &context, auto &value) -> operation {
+  make_if_func_t<decltype(tup)> func{tup};
 
-    using context_t = std::decay_t<decltype(context)>;
+  // auto func = [tup](auto &context, auto &value) -> operation {
 
-    return detail::run_if<context_t::is_loop, context_t::level + 1>(
-        &value, tup,
-        [context](auto &value, std::exception_ptr ep, operation op) mutable {
-          auto &f = context.f();
+  //  using context_t = std::decay_t<decltype(context)>;
 
-          if (ep && op == operation::_exception) {
-            f(value, ep, op);
-          } else if (op == operation::_break || op == operation::_continue ||
-                     op == operation::_return) {
-            f(value, ep, op);
-          } else if (op == operation::_done) {
-            detail::while_true_finished_helper<1, context_t>(f);
-          }
-        });
+  //  return detail::run_if<context_t::is_loop, context_t::level + 1>(
+  //      &value, tup,
+  //      [context](auto &value, std::exception_ptr ep, operation op) mutable {
+  //        auto &f = context.f();
 
-  };
+  //        if (ep && op == operation::_exception) {
+  //          f(value, ep, op);
+  //        } else if (op == operation::_break || op == operation::_continue ||
+  //                   op == operation::_return) {
+  //          f(value, ep, op);
+  //        } else if (op == operation::_done) {
+  //          detail::while_true_finished_helper<1, context_t>(f);
+  //        }
+  //      });
+
+  //};
   return func;
 }
 
@@ -501,5 +557,77 @@ template <class P, class... T> auto make_while(P p, T &&... t) {
         }
       },
       t...);
+}
+
+namespace detail {
+template <class T> struct calculate_function_level;
+
+template <class T> struct function_level {
+  enum { value = 0 };
+};
+
+template <std::size_t... I> struct calc_max;
+
+template <std::size_t First> struct calc_max<First> {
+  enum { value = First };
+};
+
+template <std::size_t First, std::size_t Second, std::size_t... I>
+struct calc_max<First, Second, I...> {
+  enum { value_rest = calc_max<Second, I...>::value };
+  enum { value = First > value_rest ? First : value_rest };
+};
+
+template <class... T> struct calculate_function_level<std::tuple<T...>> {
+  enum { value = calc_max<function_level<T>::value...>::value };
+};
+template <class... T> struct calculate_function_level<const std::tuple<T...>> {
+  enum {
+
+    value = calc_max<function_level<T>::value...>::value
+  };
+};
+
+template <class T> struct function_level<make_while_func_t<T>> {
+  using inner_tuple = typename make_while_func_t<T>::tuple_t;
+  enum { value = 1 + calculate_function_level<inner_tuple>::value };
+};
+template <class T> struct function_level<make_if_func_t<T>> {
+  enum {
+    value =
+        2 + calculate_function_level<typename make_if_func_t<T>::tuple_t>::value
+  };
+};
+
+template <class Value, std::size_t Size, std::size_t Levels>
+struct value_t : Value {
+  using Value::Value;
+
+  std::array<std::aligned_storage_t<Size>, Levels>
+      stackless_coroutine_finished_storage;
+};
+
+template <class Value, class Tuple, class FinishedTemp>
+struct coroutine_holder {
+
+  std::unique_ptr<Value> ptr;
+  Tuple t;
+  FinishedTemp f_temp;
+  template <class... A> explicit operator bool() { return ptr.get(); }
+  template <class... A> auto operator()(A &&... a) {
+    return run(std::move(ptr), t, std::move(f_temp),
+               std::forward<decltype(a)>(a)...);
+  }
+};
+}
+template <class Value, class Tuple, class FinishedTemp, class... A>
+auto make_coroutine(const Tuple *t, FinishedTemp f_temp, A &&... a) {
+  constexpr auto levels = 1 + detail::calculate_function_level<Tuple>::value;
+  using v_t = detail::value_t<Value, sizeof(FinishedTemp), levels>;
+
+  auto ptr = std::make_unique<v_t>(std::forward<A>(a)...);
+
+  return detail::coroutine_holder<Value, const Tuple *, FinishedTemp>{
+      std::move(ptr), t, std::move(f_temp)};
 }
 }

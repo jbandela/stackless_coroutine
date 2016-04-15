@@ -26,10 +26,11 @@ template <class R> struct value_t {
 };
 
 template <class V, class T> auto get_future(T t) {
-  auto p = std::make_unique<V>();
-  auto fut = p->p.get_future();
-  stackless_coroutine::run(
-      std::move(p), t,
+  std::cout << stackless_coroutine::detail::calculate_function_level<
+                   std::decay_t<decltype(*t)>>::value
+            << std::endl;
+  auto co = stackless_coroutine::make_coroutine<V>(
+      t,
       [](V &value, std::exception_ptr ep, stackless_coroutine::operation op) {
         ++value.finished_count;
         REQUIRE(value.finished_count == 1);
@@ -39,6 +40,8 @@ template <class V, class T> auto get_future(T t) {
           value.p.set_value(value.return_value);
         }
       });
+  auto fut = co.ptr->p.get_future();
+  co();
   return fut;
 }
 TEST_CASE("Simple test while", "[stackless]") {
