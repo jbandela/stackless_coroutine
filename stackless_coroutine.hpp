@@ -4,6 +4,7 @@
 //          http://www.boost.org/LICENSE_1_0.txt)
 
 #pragma once
+#include <array>
 #include <exception>
 #include <memory>
 #include <stdexcept>
@@ -59,6 +60,7 @@ template <class F, std::size_t Pos> struct dummy_coroutine_context {
   template <class T> dummy_coroutine_context(T &) {}
 
   enum { position = Pos };
+  enum { level = F::level };
   enum { is_loop = true };
   enum { is_if = true };
 };
@@ -82,6 +84,7 @@ template <class Finished, size_t Pos, bool Loop, bool If>
 struct coroutine_context : loop_base<Loop, If> {
 
   enum { position = Pos };
+  enum { level = Finished::level };
 
   operation do_return() { return operation::_return; };
   operation do_next() { return operation::_next; };
@@ -151,6 +154,21 @@ struct coroutine_processor<operation, Pos, Size, Loop, If> {
   }
 };
 
+template <typename V, typename F, typename = void>
+struct has_finished_storage : std::false_type {};
+template <typename V, typename F>
+struct has_finished_storage<
+    V, F,
+    decltype((void)std::declval<V>().stackless_coroutine_finished_storage)> {
+  using storage_t = std::decay_t<decltype(
+      std::declval<V>().stackless_coroutine_finished_storage)>;
+  static constexpr bool value =
+      sizeof(F) <= sizeof(storage_t) && alignof(F) <= alignof(storage_t);
+};
+
+template <class V, class F>
+constexpr bool has_finished_storage_v = has_finished_storage<V, F>::value;
+
 template <std::size_t Pos, std::size_t Size, bool Loop, bool If>
 struct coroutine_processor<async_result, Pos, Size, Loop, If> {
 
@@ -187,6 +205,14 @@ struct coroutine_processor<async_result, Pos, Size, Loop, If> {
       }
       return op;
     }
+
+    template <class Value>
+    auto static get_context(Value *v)
+        -> std::enable_if_t<has_finished_storage_v<Value, Finished>,
+                            async_context> {
+      Finished f{v};
+      return async_context<Finished>{f};
+    }
   };
 
   template <class Finished, class... T>
@@ -199,9 +225,15 @@ struct coroutine_processor<async_result, Pos, Size, Loop, If> {
   }
 };
 
-template <class Value, class Tuple, class F, class Destroyer = Value *>
-struct finished_wrapper {
+template <class F, class Tuple> struct finished_tuple_holder {
+  F f;
+  const Tuple *t;
+};
+template <std::size_t Level, class Value, class Tuple, class F, class Destroyer,
+          bool HasFinishedStorage>
+struct finished_wrapper_impl {
 
+  enum { level = Level };
   Value *value_;
   const Tuple *tuple_;
   F f_;
@@ -215,6 +247,66 @@ struct finished_wrapper {
     (void)d;
     return f_(std::forward<A>(a)...);
   }
+};
+template <std::size_t Level, class Value, class Tuple, class F, class Destroyer>
+struct finished_wrapper_impl<Level, Value, Tuple, F, Destroyer, true> {
+
+  enum { level = Level };
+  Value *value_;
+
+  finished_tuple_holder<F, Tuple> &ft_holder() {
+    static_assert(
+        std::tuple_size<decltype(
+                value_->stackless_coroutine_finished_storage)>::value > Level,
+        "stackless_coroutine_finished_storage array not large enough");
+    return *reinterpret_cast<finished_tuple_holder<F, Tuple> *>(
+        &(value_->stackless_coroutine_finished_storage[Level]));
+  };
+  const Tuple &tuple() { return *ft_holder().t; };
+  F &f() { return ft_holder().f; };
+  Value &value() { return *value_; }
+  enum { tuple_size = std::tuple_size<Tuple>::value };
+
+  finished_wrapper_impl(Value *v, const Tuple *t, F f_temp) : value_{v} {
+
+    static_assert(
+        std::tuple_size<decltype(
+                value_->stackless_coroutine_finished_storage)>::value > Level,
+        "stackless_coroutine_finished_storage array not large enough");
+    new (&(value_->stackless_coroutine_finished_storage[Level]))
+        finished_tuple_holder<F, Tuple>{std::move(f_temp), t};
+  }
+  finished_wrapper_impl(Value *v) : value_{v} {}
+
+  struct f_destroyer {
+    finished_wrapper_impl *pthis;
+
+    ~f_destroyer() { pthis->f().~F(); }
+  };
+  template <class... A> auto operator()(A &&... a) {
+    if (Level == 0) {
+      Destroyer d{value_};
+      f_destroyer fd{this};
+      (void)d;
+      f()(std::forward<A>(a)...);
+
+    } else {
+      f_destroyer fd{this};
+      f()(std::forward<A>(a)...);
+    }
+  }
+};
+template <std::size_t Level, class Value, class Tuple, class F,
+          class Destroyer = Value *>
+struct finished_wrapper
+    : finished_wrapper_impl<Level, Value, Tuple, F, Destroyer,
+                            has_finished_storage_v<Value, F>> {
+
+  using fimpl = finished_wrapper_impl<Level, Value, Tuple, F, Destroyer,
+                                      has_finished_storage_v<Value, F>>;
+
+  template <class... T>
+  finished_wrapper(T &&... t) : fimpl{std::forward<T>(t)...} {}
 };
 
 template <bool IsLoop, bool If, class Finished, class... A>
@@ -241,22 +333,24 @@ auto run_helper(Finished f, A &&... a) {
   return op;
 }
 
-template <class Value, class Tuple, class FinishedTemp, class... A>
+template <std::size_t Level, class Value, class Tuple, class FinishedTemp,
+          class... A>
 auto run_loop(Value *v, const Tuple *t, FinishedTemp f_temp, A &&... a) {
-  using Finished = finished_wrapper<Value, Tuple, FinishedTemp>;
+  using Finished = finished_wrapper<Level, Value, Tuple, FinishedTemp>;
 
   return run_helper<true, false>(Finished{v, t, std::move(f_temp)});
 }
-template <bool Loop, class Value, class Tuple, class FinishedTemp, class... A>
+template <bool Loop, std::size_t Level, class Value, class Tuple,
+          class FinishedTemp, class... A>
 auto run_if(Value *v, const Tuple *t, FinishedTemp f_temp, A &&... a) {
-  using Finished = finished_wrapper<Value, Tuple, FinishedTemp>;
+  using Finished = finished_wrapper<Level, Value, Tuple, FinishedTemp>;
 
   return run_helper<Loop, true>(Finished{v, t, std::move(f_temp)});
 }
 }
 template <class Value, class Tuple, class FinishedTemp, class... A>
 auto run(Value *v, const Tuple *t, FinishedTemp f_temp, A &&... a) {
-  using Finished = detail::finished_wrapper<Value, Tuple, FinishedTemp>;
+  using Finished = detail::finished_wrapper<0, Value, Tuple, FinishedTemp>;
 
   return detail::run_helper<false, false>(Finished{v, t, std::move(f_temp)});
 }
@@ -264,7 +358,7 @@ template <class Type, class Deleter, class Tuple, class FinishedTemp,
           class... A>
 auto run(std::unique_ptr<Type, Deleter> v, const Tuple *t, FinishedTemp f_temp,
          A &&... a) {
-  using Finished = detail::finished_wrapper<Type, Tuple, FinishedTemp,
+  using Finished = detail::finished_wrapper<0, Type, Tuple, FinishedTemp,
                                             std::unique_ptr<Type, Deleter>>;
 
   return detail::run_helper<false, false>(
@@ -341,7 +435,7 @@ template <class... T> auto make_while_true(T &&... t) {
       return op;
     };
 
-    detail::run_loop(&value, tuple, finished);
+    detail::run_loop<context_type::level + 1>(&value, tuple, finished);
     return operation::_suspend;
 
   };
@@ -355,9 +449,11 @@ auto make_if(Pred pred, Then t, Else e) {
       [pred, t, e](auto &context, auto &value) {
         using context_t = std::decay_t<decltype(context)>;
         if (pred(value)) {
-          detail::run_if<context_t::is_loop>(&value, t, context);
+          detail::run_if<context_t::is_loop, context_t::level + 1>(&value, t,
+                                                                   context);
         } else {
-          detail::run_if<context_t::is_loop>(&value, e, context);
+          detail::run_if<context_t::is_loop, context_t::level + 1>(&value, e,
+                                                                   context);
         }
         return context.do_async();
 
@@ -376,7 +472,7 @@ auto make_if(Pred pred, Then t, Else e) {
 
     using context_t = std::decay_t<decltype(context)>;
 
-    return detail::run_if<context_t::is_loop>(
+    return detail::run_if<context_t::is_loop, context_t::level + 1>(
         &value, tup,
         [context](auto &value, std::exception_ptr ep, operation op) mutable {
           auto &f = context.f();

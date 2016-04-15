@@ -21,6 +21,8 @@ template <class R> struct value_t {
   R return_value;
   std::promise<R> p;
   int finished_count = 0;
+  std::array<std::aligned_storage_t<64>, 4>
+      stackless_coroutine_finished_storage;
 };
 
 template <class V, class T> auto get_future(T t) {
