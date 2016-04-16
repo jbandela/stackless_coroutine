@@ -28,9 +28,6 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
           url{std::move(url)}, io{io}, resolver{io}, socket_{io} {}
   };
 
-  auto pval = std::make_unique<val>(std::move(host), std::move(service),
-                                    std::move(url), io);
-
   static auto tuple = stackless_coroutine::make_block(
 
       [](auto &context, auto &value) {
@@ -109,7 +106,10 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
 
           ));
 
-  return stackless_coroutine::run(std::move(pval), tuple, std::move(f));
+  auto co = stackless_coroutine::make_coroutine<val>(
+      tuple, std::move(f), std::move(host), std::move(service), std::move(url),
+      io);
+  return co();
 }
 
 #include <future>

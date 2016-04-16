@@ -33,8 +33,6 @@ struct value_t {
 void get(boost::asio::io_service &io_service, const std::string &server,
          const std::string &path) {
 
-  auto pv = std::make_unique<value_t>(io_service);
-
   auto t = stackless_coroutine::make_block(
 
       [](auto &context, auto &value, const std::string &server,
@@ -154,14 +152,16 @@ void get(boost::asio::io_service &io_service, const std::string &server,
 
           );
 
-  stackless_coroutine::run(
-      std::move(pv), t,
+  auto co = stackless_coroutine::make_coroutine<value_t>(
+      t,
       [](auto &value, std::exception_ptr ep, stackless_coroutine::operation) {
         std::cout << "\n**Finished**\n";
         if (ep)
           std::rethrow_exception(ep);
       },
-      server, path);
+      io_service);
+
+  co(server, path);
 }
 int main(int argc, char *argv[]) {
   try {

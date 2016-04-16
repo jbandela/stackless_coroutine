@@ -24,15 +24,6 @@ enum class operation {
   _exception,
   _size
 };
-const char *operation_descriptions[] = {"suspend",   "next",     "return",
-                                        "break",     "continue", "done",
-                                        "exception", "size"};
-
-static_assert(static_cast<std::size_t>(operation::_size) + 1 ==
-                  sizeof(operation_descriptions) /
-                      sizeof(operation_descriptions[0]),
-              "stackless_coroutine::operations does not match size");
-
 namespace detail {
 struct async_result {
   operation op = operation::_suspend;
@@ -59,6 +50,8 @@ template <class F, std::size_t Pos> struct dummy_coroutine_context {
   dummy_coroutine_context(const dummy_coroutine_context &) {}
   dummy_coroutine_context(dummy_coroutine_context &&) {}
   template <class T> dummy_coroutine_context(T &) {}
+
+  template <class V> static dummy_coroutine_context get_context(V *v);
 
   enum { position = Pos };
   enum { level = F::level };
@@ -170,13 +163,27 @@ struct has_finished_storage<
 template <class V, class F>
 constexpr bool has_finished_storage_v = has_finished_storage<V, F>::value;
 
+template <class AsyncContext, class Finished, bool>
+struct get_context_from_void {
+  template <class V> auto static get_context(V *v) {
+    Finished f{static_cast<typename Finished::value_t *>(v)};
+    return AsyncContext{f};
+  }
+};
+template <class AsyncContext, class Finished>
+struct get_context_from_void<AsyncContext, Finished, false> {};
+
 template <std::size_t Pos, std::size_t Size, bool Loop, bool If>
 struct coroutine_processor<async_result, Pos, Size, Loop, If> {
 
   enum { position = Pos };
 
   template <class Finished>
-  struct async_context : coroutine_context<Finished, Pos, Loop, If> {
+  struct async_context
+      : coroutine_context<Finished, Pos, Loop, If>,
+        get_context_from_void<
+            async_context<Finished>, Finished,
+            has_finished_storage<typename Finished::value_t, Finished>::value> {
     using base_t = coroutine_context<Finished, Pos, Loop, If>;
     async_context(Finished f) : base_t{std::move(f)} {}
     using base_t::f;
@@ -205,14 +212,6 @@ struct coroutine_processor<async_result, Pos, Size, Loop, If> {
         f()(f().value(), nullptr, op);
       }
       return op;
-    }
-
-    template <class Value>
-    auto static get_context(Value *v)
-        -> std::enable_if_t<has_finished_storage_v<Value, Finished>,
-                            async_context> {
-      Finished f{v};
-      return async_context<Finished>{f};
     }
   };
 
@@ -274,6 +273,16 @@ struct finished_wrapper_impl<Level, Value, Tuple, F, Destroyer, true> {
         std::tuple_size<decltype(
                 value_->stackless_coroutine_finished_storage)>::value > Level,
         "stackless_coroutine_finished_storage array not large enough");
+
+    using element_t = std::tuple_element_t<
+        Level, decltype(value_->stackless_coroutine_finished_storage)>;
+
+    static_assert(
+
+        sizeof(finished_tuple_holder<F, Tuple>) <= sizeof(element_t) &&
+            alignof(finished_tuple_holder<F, Tuple>) <= alignof(element_t),
+        "stackless_coroutine_finished_storage element not large enough or not "
+        "aligned correctly");
     new (&(value_->stackless_coroutine_finished_storage[Level]))
         finished_tuple_holder<F, Tuple>{std::move(f_temp), t};
   }
@@ -303,6 +312,7 @@ struct finished_wrapper
     : finished_wrapper_impl<Level, Value, Tuple, F, Destroyer,
                             has_finished_storage_v<Value, F>> {
 
+  using value_t = Value;
   using fimpl = finished_wrapper_impl<Level, Value, Tuple, F, Destroyer,
                                       has_finished_storage_v<Value, F>>;
 
@@ -368,7 +378,7 @@ auto run(std::unique_ptr<Type, Deleter> v, const Tuple *t, FinishedTemp f_temp,
 
 namespace detail {
 
-auto dummy_terminator = [](auto &, auto &) {};
+const auto dummy_terminator = [](auto &, auto &) {};
 using dummy_terminator_t = std::decay_t<decltype(dummy_terminator)>;
 }
 
@@ -411,7 +421,7 @@ auto while_true_finished_helper(Finished &f) {
   }
 }
 
-auto dummy_while_terminator = [](auto &, auto &) {
+const auto dummy_while_terminator = [](auto &, auto &) {
   return operation::_continue;
 };
 using dummy_while_terminator_t = std::decay_t<decltype(dummy_while_terminator)>;
@@ -447,27 +457,6 @@ template <class... T> auto make_while_true(T &&... t) {
       make_block(std::forward<T>(t)..., detail::dummy_while_terminator);
   using mwf_t = make_while_func_t<decltype(tuple)>;
   mwf_t func{tuple};
-  // auto func = [tuple](auto &context, auto &value) -> operation {
-
-  //  using context_type = std::decay_t<decltype(context)>;
-
-  //  auto finished = [f = context.f()](auto &value, std::exception_ptr ep,
-  //                                    operation op) mutable {
-  //    if (ep && op == operation::_exception) {
-  //      (f)(f.value(), ep, operation::_exception);
-  //    } else if (op == operation::_break) {
-  //      detail::while_true_finished_helper<1, context_type>(f);
-  //    } else if (op == operation::_return) {
-  //      (f)(f.value(), ep, operation::_return);
-  //    }
-  //    return op;
-  //  };
-
-  //  detail::run_loop<context_type::level + 1>(&value, tuple, finished);
-  //  return operation::_suspend;
-
-  //};
-
   return func;
 };
 
@@ -524,26 +513,6 @@ auto make_if(Pred pred, Then t, Else e) {
 
   make_if_func_t<decltype(tup)> func{tup};
 
-  // auto func = [tup](auto &context, auto &value) -> operation {
-
-  //  using context_t = std::decay_t<decltype(context)>;
-
-  //  return detail::run_if<context_t::is_loop, context_t::level + 1>(
-  //      &value, tup,
-  //      [context](auto &value, std::exception_ptr ep, operation op) mutable {
-  //        auto &f = context.f();
-
-  //        if (ep && op == operation::_exception) {
-  //          f(value, ep, op);
-  //        } else if (op == operation::_break || op == operation::_continue ||
-  //                   op == operation::_return) {
-  //          f(value, ep, op);
-  //        } else if (op == operation::_done) {
-  //          detail::while_true_finished_helper<1, context_t>(f);
-  //        }
-  //      });
-
-  //};
   return func;
 }
 
@@ -623,11 +592,14 @@ struct coroutine_holder {
 template <class Value, class Tuple, class FinishedTemp, class... A>
 auto make_coroutine(const Tuple *t, FinishedTemp f_temp, A &&... a) {
   constexpr auto levels = 1 + detail::calculate_function_level<Tuple>::value;
-  using v_t = detail::value_t<Value, sizeof(FinishedTemp), levels>;
+  using f_t = detail::finished_wrapper<0, Value, Tuple, FinishedTemp,
+                                       std::unique_ptr<Value>>;
+  using f_t_h = detail::finished_tuple_holder<f_t, Tuple>;
+  using v_t = detail::value_t<Value, sizeof(f_t_h), levels>;
 
   auto ptr = std::make_unique<v_t>(std::forward<A>(a)...);
 
-  return detail::coroutine_holder<Value, const Tuple *, FinishedTemp>{
+  return detail::coroutine_holder<v_t, const Tuple *, FinishedTemp>{
       std::move(ptr), t, std::move(f_temp)};
 }
 }

@@ -4,6 +4,7 @@
 //          http://www.boost.org/LICENSE_1_0.txt)
 
 #include "stackless_coroutine.hpp"
+#include <iostream>
 #include <thread>
 #define CATCH_CONFIG_MAIN
 #include "catch.hpp"
@@ -21,14 +22,9 @@ template <class R> struct value_t {
   R return_value;
   std::promise<R> p;
   int finished_count = 0;
-  std::array<std::aligned_storage_t<64>, 4>
-      stackless_coroutine_finished_storage;
 };
 
 template <class V, class T> auto get_future(T t) {
-  std::cout << stackless_coroutine::detail::calculate_function_level<
-                   std::decay_t<decltype(*t)>>::value
-            << std::endl;
   auto co = stackless_coroutine::make_coroutine<V>(
       t,
       [](V &value, std::exception_ptr ep, stackless_coroutine::operation op) {
@@ -129,6 +125,29 @@ TEST_CASE("while async", "[stackless]") {
           },
           [](auto &context, auto &value) {
             do_thread([context]() mutable { context(1); });
+            return context.do_async();
+          },
+          [](auto &context, auto &value, int aval) {
+            value.return_value += aval;
+          })));
+  REQUIRE(f.get() == 5);
+}
+
+TEST_CASE("while async get_context", "[stackless]") {
+  auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
+      [](auto &context, auto &value) { value.return_value = 1; },
+      stackless_coroutine::make_while_true(
+          [](auto &context, auto &value) {
+            if (value.return_value < 5)
+              return context.do_next();
+            else
+              return context.do_break();
+
+          },
+          [](auto &context, auto &value) {
+            using context_t = std::decay_t<decltype(context)>;
+            void *v = &value;
+            do_thread([v]() { context_t::get_context(v)(1); });
             return context.do_async();
           },
           [](auto &context, auto &value, int aval) {
