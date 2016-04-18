@@ -254,28 +254,55 @@ struct finished_wrapper_impl<Level, Value, Tuple, F, Destroyer, true> {
   enum { level = Level };
   Value *value_;
 
-  finished_tuple_holder<F, Tuple> &ft_holder() {
+  finished_tuple_holder<F, Tuple> &
+      ft_holder(std::integral_constant<std::size_t, 0>) {
+    return *reinterpret_cast<finished_tuple_holder<F, Tuple> *>(
+        &(value_->stackless_coroutine_finished_storage));
+  }
+  template <std::size_t I>
+  finished_tuple_holder<F, Tuple> &
+      ft_holder(std::integral_constant<std::size_t, I>) {
     static_assert(
         std::tuple_size<decltype(
-                value_->stackless_coroutine_finished_storage)>::value > Level,
+                value_->stackless_coroutine_finished_storage_level)>::value >=
+            I,
         "stackless_coroutine_finished_storage array not large enough");
     return *reinterpret_cast<finished_tuple_holder<F, Tuple> *>(
-        &(value_->stackless_coroutine_finished_storage[Level]));
-  };
+        &(value_->stackless_coroutine_finished_storage_level[I - 1]));
+  }
+
+  finished_tuple_holder<F, Tuple> &ft_holder() {
+    return ft_holder(std::integral_constant<std::size_t, Level>{});
+  }
   const Tuple &tuple() { return *ft_holder().t; };
   F &f() { return ft_holder().f; };
   Value &value() { return *value_; }
   enum { tuple_size = std::tuple_size<Tuple>::value };
 
-  finished_wrapper_impl(Value *v, const Tuple *t, F f_temp) : value_{v} {
+  void finished_wrapper_impl_init(Value *v, const Tuple *t, F &f_temp,
+                                  std::integral_constant<std::size_t, 0>) {
+
+    using element_t = decltype(value_->stackless_coroutine_finished_storage);
 
     static_assert(
+        sizeof(finished_tuple_holder<F, Tuple>) <= sizeof(element_t) &&
+            alignof(finished_tuple_holder<F, Tuple>) <= alignof(element_t),
+        "stackless_coroutine_finished_storage element not large enough or not "
+        "aligned correctly");
+    new (&(value_->stackless_coroutine_finished_storage))
+        finished_tuple_holder<F, Tuple>{std::move(f_temp), t};
+  }
+  template <std::size_t I>
+  void finished_wrapper_impl_init(Value *v, const Tuple *t, F &f_temp,
+                                  std::integral_constant<std::size_t, I>) {
+    static_assert(
         std::tuple_size<decltype(
-                value_->stackless_coroutine_finished_storage)>::value > Level,
-        "stackless_coroutine_finished_storage array not large enough");
+                value_->stackless_coroutine_finished_storage_level)>::value >=
+            I,
+        "stackless_coroutine_finished_storage_level array not large enough");
 
     using element_t = std::tuple_element_t<
-        Level, decltype(value_->stackless_coroutine_finished_storage)>;
+        I - 1, decltype(value_->stackless_coroutine_finished_storage_level)>;
 
     static_assert(
 
@@ -283,8 +310,13 @@ struct finished_wrapper_impl<Level, Value, Tuple, F, Destroyer, true> {
             alignof(finished_tuple_holder<F, Tuple>) <= alignof(element_t),
         "stackless_coroutine_finished_storage element not large enough or not "
         "aligned correctly");
-    new (&(value_->stackless_coroutine_finished_storage[Level]))
+    new (&(value_->stackless_coroutine_finished_storage_level[I - 1]))
         finished_tuple_holder<F, Tuple>{std::move(f_temp), t};
+  }
+
+  finished_wrapper_impl(Value *v, const Tuple *t, F f_temp) : value_{v} {
+    finished_wrapper_impl_init(v, t, f_temp,
+                               std::integral_constant<std::size_t, Level>{});
   }
   finished_wrapper_impl(Value *v) : value_{v} {}
 
@@ -568,12 +600,14 @@ template <class T> struct function_level<make_if_func_t<T>> {
   };
 };
 
-template <class Value, std::size_t Size, std::size_t Levels>
+template <class Value, std::size_t Size, std::size_t LevelSize,
+          std::size_t Levels>
 struct value_t : Value {
   using Value::Value;
 
-  std::array<std::aligned_storage_t<Size>, Levels>
-      stackless_coroutine_finished_storage;
+  std::aligned_storage_t<Size> stackless_coroutine_finished_storage;
+  std::array<std::aligned_storage_t<LevelSize>, Levels>
+      stackless_coroutine_finished_storage_level;
 };
 
 template <class Value, class Tuple, class FinishedTemp>
@@ -591,11 +625,21 @@ struct coroutine_holder {
 }
 template <class Value, class Tuple, class FinishedTemp, class... A>
 auto make_coroutine(const Tuple *t, FinishedTemp f_temp, A &&... a) {
+  struct dummy {
+    Value *v;
+  };
+  dummy d;
+  auto dummy_f = [d]() {};
+
   constexpr auto levels = 1 + detail::calculate_function_level<Tuple>::value;
   using f_t = detail::finished_wrapper<0, Value, Tuple, FinishedTemp,
                                        std::unique_ptr<Value>>;
   using f_t_h = detail::finished_tuple_holder<f_t, Tuple>;
-  using v_t = detail::value_t<Value, sizeof(f_t_h), levels>;
+  using v_t =
+      detail::value_t<Value, sizeof(f_t_h),
+                      sizeof(detail::finished_wrapper<levels - 1, Value, Tuple,
+                                                      decltype(dummy_f)>),
+                      levels>;
 
   auto ptr = std::make_unique<v_t>(std::forward<A>(a)...);
 
