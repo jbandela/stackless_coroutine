@@ -10,81 +10,80 @@
 
 template <class Finished>
 auto do_coroutine(boost::asio::io_service &io, std::string host,
-                  std::string service, std::string url, Finished f) {
+                  std::string url, Finished f) {
+
+  // Holds values that must be across calls to the lambdas
   struct val {
-    std::string host;
-    std::string service;
-    std::string url;
-    boost::asio::io_service &io;
-
     boost::asio::ip::tcp::resolver resolver;
-    boost::asio::ip::tcp::socket socket_;
-    std::string request_string;
+    boost::asio::ip::tcp::socket socket;
+    boost::asio::streambuf request;
     std::string current;
-
-    val(std::string host, std::string service, std::string url,
-        boost::asio::io_service &io)
-        : host{std::move(host)}, service{std::move(service)},
-          url{std::move(url)}, io{io}, resolver{io}, socket_{io} {}
+    explicit val(boost::asio::io_service &io) : resolver{io}, socket{io} {}
   };
+  // Create the block for the lambda
+  static auto block = stackless_coroutine::make_block(
 
-  static auto tuple = stackless_coroutine::make_block(
+      // For the first lamda of the block, in addition to context, and value,
+      // can take other parameters
+      [](auto &context, auto &value, const std::string &host,
+         const std::string &path) {
+        std::ostream request_stream(&value.request);
 
-      [](auto &context, auto &value) {
-        boost::asio::ip::tcp::resolver::query query{value.host, value.service};
+        request_stream << "GET " << path << " HTTP/1.0\r\n";
+        request_stream << "Host: " << host << "\r\n";
+        request_stream << "Accept: */*\r\n";
+        request_stream << "Connection: close\r\n\r\n";
+
+        boost::asio::ip::tcp::resolver::query query{host, "http"};
+
+        // Pass context in to any function that requires a callback
         value.resolver.async_resolve(query, context);
+
+        // Return do_async to signal that we have made an async call, and that
+        // we should not go on the next
+        // lamda upon return
         return context.do_async();
       },
-      // Connect to the host
+      // In the next lambda after a do_async, in addition to context, and value,
+      // also take the parameters
+      // of the callback, in this case the error_code ec, and iterator
       [](auto &context, auto &value, auto ec, auto iterator) {
 
+        // We can throw exceptions, and the exception will exit the entire block
         if (ec) {
           throw boost::system::system_error{ec};
         } else {
-          boost::asio::async_connect(value.socket_, iterator, context);
+
+          // Pass context as the callback
+          boost::asio::async_connect(value.socket, iterator, context);
           return context.do_async();
         }
 
       },
-      // Check if connection successful
+      // Take the parameters for the async_connect callback
       [](auto &context, auto &value, auto &ec, auto iterator) {
 
         if (ec) {
           throw boost::system::system_error{ec};
-        } else {
         }
 
-      },
-      // Send the GET message
-      [](auto &context, auto &value) {
-
-        std::stringstream request_stream;
-        request_stream << "GET " << value.url << " HTTP/1.0\r\n";
-        request_stream << "Host: " << value.host << "\r\n";
-        request_stream << "Accept: */*\r\n";
-        request_stream << "Connection: close\r\n\r\n";
-
         // Send the request.
-        value.request_string = request_stream.str();
-        auto &str = value.request_string;
-        boost::asio::async_write(value.socket_,
-                                 boost::asio::buffer(str.data(), str.size()),
-                                 context);
+        boost::asio::async_write(value.socket, value.request, context);
         return context.do_async();
       },
-      //  Check for errors
       [](auto &context, auto &value, auto &ec, auto n) {
         if (ec) {
           throw boost::system::system_error{ec};
         }
 
       },
-      // Read in a loop
-      stackless_coroutine::make_while_true(
-          [](auto &context, auto &value) { value.current.resize(20); },
 
+      // make_while_true creates a loop, that always repeats, unless
+      // context.do_break is called
+      stackless_coroutine::make_while_true(
           [](auto &context, auto &value) {
-            value.socket_.async_read_some(
+            value.current.resize(20);
+            value.socket.async_read_some(
                 boost::asio::buffer(&value.current[0], value.current.size()),
                 context);
             return context.do_async();
@@ -94,22 +93,34 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
             if (ec) {
               if (ec != boost::asio::error::eof)
                 std::cerr << ec.message();
+              // context.do_break breaks out of the loop
               return context.do_break();
             } else {
 
               value.current.resize(n);
               std::cout << value.current;
-              return context.do_next();
+
+              // context.do_continue continues the loop out of the loop
+              // We could also return do_next() which will continue to the next
+              // lamda
+              // which in this case would result in re-entering the loop at the
+              // top
+              return context.do_continue();
             }
 
           }
 
           ));
 
-  auto co = stackless_coroutine::make_coroutine<val>(
-      tuple, std::move(f), std::move(host), std::move(service), std::move(url),
-      io);
-  return co();
+  // pass the block, and the callback, along with any arguments for our val
+  // constructor,
+  // which in this case is io to make_coroutine
+  auto co = stackless_coroutine::make_coroutine<val>(block, std::move(f), io);
+
+  // call co with arguments corresponding to the parameters of the first lambda
+  // after context and value
+  // which in this case is host, and url
+  return co(host, url);
 }
 
 #include <future>
@@ -118,37 +129,18 @@ auto do_coroutine(boost::asio::io_service &io, std::string host,
 int main() {
 
   boost::asio::io_service io;
-  auto work = std::make_unique<boost::asio::io_service::work>(io);
+  do_coroutine(io, "www.httpbin.org", "/",
 
-  std::promise<void> done_promise;
+               // The callback - which takes a reference to the val struct, an
+               // exception pointer, and op which tells us how we exited the
+               // coroutine
+               [&](auto &a, std::exception_ptr e, auto op) {
+                 if (e) {
+                   std::cerr << "\nHad an exception\n";
+                 } else {
+                   std::cout << "\nFinished successfully\n";
+                 }
+               });
 
-  auto done_future = done_promise.get_future();
-
-  auto func = [&]() {
-    do_coroutine(io, "www.httpbin.org", "http", "/",
-                 [&](auto &a, std::exception_ptr e, auto op) {
-                   if (e) {
-                     done_promise.set_exception(e);
-                   } else {
-                     done_promise.set_value();
-                   }
-                 });
-  };
-
-  io.post(func);
-
-  auto frun = std::async(std::launch::async, [&]() { io.run(); });
-
-  done_future.wait();
-
-  work.reset();
-
-  frun.get();
-
-  try {
-
-    done_future.get();
-  } catch (std::exception &e) {
-    std::cerr << e.what() << "\n";
-  }
+  io.run();
 };
