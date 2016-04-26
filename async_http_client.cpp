@@ -21,23 +21,23 @@
 
 using boost::asio::ip::tcp;
 
-struct value_t {
+struct coroutine_variables_t {
   tcp::resolver resolver_;
   tcp::socket socket_;
   boost::asio::streambuf request_;
   boost::asio::streambuf response_;
-  value_t(boost::asio::io_service &io_service)
+  coroutine_variables_t(boost::asio::io_service &io_service)
       : resolver_(io_service), socket_(io_service) {}
 };
 
 void get(boost::asio::io_service &io_service, const std::string &server,
          const std::string &path) {
 
-  auto t = stackless_coroutine::make_block(
+  auto block = stackless_coroutine::make_block(
 
-      [](auto &context, auto &value, const std::string &server,
+      [](auto &context, auto &coroutine_variables, const std::string &server,
          const std::string &path) {
-        std::ostream request_stream(&value.request_);
+        std::ostream request_stream(&coroutine_variables.request_);
         request_stream << "GET " << path << " HTTP/1.0\r\n";
         request_stream << "Host: " << server << "\r\n";
         request_stream << "Accept: */*\r\n";
@@ -47,46 +47,50 @@ void get(boost::asio::io_service &io_service, const std::string &server,
         // names
         // into a list of endpoints.
         tcp::resolver::query query(server, "http");
-        value.resolver_.async_resolve(query, context);
+        coroutine_variables.resolver_.async_resolve(query, context);
         return context.do_async();
       },
-      [](auto &context, auto &value, auto err, auto endpoint_iterator) {
+      [](auto &context, auto &coroutine_variables, auto err,
+         auto endpoint_iterator) {
         if (err) {
           std::cout << "Error: " << err.message() << "\n";
           return context.do_async_return();
         } else {
-          boost::asio::async_connect(value.socket_, endpoint_iterator, context);
+          boost::asio::async_connect(coroutine_variables.socket_,
+                                     endpoint_iterator, context);
           return context.do_async();
         }
       },
-      [](auto &context, auto &value, auto err, auto) {
+      [](auto &context, auto &coroutine_variables, auto err, auto) {
         if (err) {
           std::cout << "Error: " << err.message() << "\n";
           return context.do_async_return();
         } else {
-          boost::asio::async_write(value.socket_, value.request_, context);
+          boost::asio::async_write(coroutine_variables.socket_,
+                                   coroutine_variables.request_, context);
           return context.do_async();
         }
       },
-      [](auto &context, auto &value, auto err, std::size_t) {
+      [](auto &context, auto &coroutine_variables, auto err, std::size_t) {
         if (err) {
           std::cout << "Error: " << err.message() << "\n";
           return context.do_async_return();
         } else {
-          boost::asio::async_read_until(value.socket_, value.response_, "\r\n",
+          boost::asio::async_read_until(coroutine_variables.socket_,
+                                        coroutine_variables.response_, "\r\n",
                                         context);
           return context.do_async();
         }
 
       },
 
-      [](auto &context, auto &value, auto err, std::size_t) {
+      [](auto &context, auto &coroutine_variables, auto err, std::size_t) {
         if (err) {
           std::cout << "Error: " << err.message() << "\n";
           return context.do_async_return();
         } else {
           // Check that response is OK.
-          std::istream response_stream(&value.response_);
+          std::istream response_stream(&coroutine_variables.response_);
           std::string http_version;
           response_stream >> http_version;
           unsigned int status_code;
@@ -104,27 +108,28 @@ void get(boost::asio::io_service &io_service, const std::string &server,
           }
 
           // Read the response headers, which are terminated by a blank line.
-          boost::asio::async_read_until(value.socket_, value.response_,
+          boost::asio::async_read_until(coroutine_variables.socket_,
+                                        coroutine_variables.response_,
                                         "\r\n\r\n", context);
           return context.do_async();
         }
 
       },
-      [](auto &context, auto &value, auto err, std::size_t) {
+      [](auto &context, auto &coroutine_variables, auto err, std::size_t) {
         if (err) {
           std::cout << "Error: " << err.message() << "\n";
           return context.do_return();
         } else {
           // Process the response headers.
-          std::istream response_stream(&value.response_);
+          std::istream response_stream(&coroutine_variables.response_);
           std::string header;
           while (std::getline(response_stream, header) && header != "\r")
             std::cout << header << "\n";
           std::cout << "\n";
 
           // Write whatever content we already have to output.
-          if (value.response_.size() > 0)
-            std::cout << &value.response_;
+          if (coroutine_variables.response_.size() > 0)
+            std::cout << &coroutine_variables.response_;
 
           // Start reading remaining data until EOF.
           return context.do_next();
@@ -132,18 +137,19 @@ void get(boost::asio::io_service &io_service, const std::string &server,
 
       },
       stackless_coroutine::make_while_true(
-          [](auto &context, auto &value) {
-            boost::asio::async_read(value.socket_, value.response_,
+          [](auto &context, auto &coroutine_variables) {
+            boost::asio::async_read(coroutine_variables.socket_,
+                                    coroutine_variables.response_,
                                     boost::asio::transfer_at_least(1), context);
             return context.do_async();
           },
-          [](auto &context, auto &value, auto err, std::size_t) {
+          [](auto &context, auto &coroutine_variables, auto err, std::size_t) {
             if (err) {
               if (err != boost::asio::error::eof)
                 std::cout << "Error: " << err.message() << "\n";
               return context.do_return();
             } else {
-              std::cout << &value.response_;
+              std::cout << &coroutine_variables.response_;
               return context.do_next();
             }
           }
@@ -152,8 +158,8 @@ void get(boost::asio::io_service &io_service, const std::string &server,
 
           );
 
-  auto co = stackless_coroutine::make_coroutine<value_t>(
-      t,
+  auto co = stackless_coroutine::make_coroutine<coroutine_variables_t>(
+      block,
       [](auto &value, std::exception_ptr ep, stackless_coroutine::operation) {
         std::cout << "\n**Finished**\n";
         if (ep)
