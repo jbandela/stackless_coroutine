@@ -6,12 +6,21 @@
 #pragma once
 #include <algorithm>
 #include <array>
-#include <exception>
 #include <memory>
-#include <stdexcept>
 #include <tuple>
 #include <type_traits>
 #include <utility>
+
+#ifdef STACKLESS_COROUTINE_NO_EXCEPTIONS
+namespace stackless_coroutine {
+using exception_ptr = void *;
+}
+#else
+#include <exception>
+namespace stackless_coroutine {
+using exception_ptr = std::exception_ptr;
+}
+#endif
 
 namespace stackless_coroutine {
 enum class operation {
@@ -24,12 +33,6 @@ enum class operation {
   _exception,
   _size
 };
-
-#ifdef STACKLESS_COROUTINE_NO_EXCEPTIONS
-using exception_ptr = void *;
-#else
-using exception_ptr = std::exception_ptr;
-#endif
 
 namespace detail {
 struct async_result {
