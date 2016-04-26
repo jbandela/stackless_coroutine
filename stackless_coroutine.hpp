@@ -24,6 +24,13 @@ enum class operation {
   _exception,
   _size
 };
+
+#ifdef STACKLESS_COROUTINE_NO_EXCEPTIONS
+using exception_ptr = void *;
+#else
+using exception_ptr = std::exception_ptr;
+#endif
+
 namespace detail {
 struct async_result {
   operation op = operation::_suspend;
@@ -91,6 +98,25 @@ struct coroutine_context : loop_base<Loop, If> {
 template <class ReturnValue, std::size_t Pos, std::size_t Size, bool Loop,
           bool If>
 struct coroutine_processor;
+
+#ifdef STACKLESS_COROUTINE_NO_EXCEPTIONS
+template <class CP, class F, class... A>
+auto process_catch_exceptions(F &f, A &&... a) {
+  return CP::process(f, std::forward<A>(a)...);
+}
+
+#else
+template <class CP, class F, class... A>
+auto process_catch_exceptions(F &f, A &&... a) {
+  try {
+    return CP::process(f, std::forward<A>(a)...);
+  } catch (...) {
+    f(f.value(), std::current_exception(), operation::_exception);
+    return operation::_exception;
+  }
+}
+
+#endif
 
 template <std::size_t Pos, std::size_t Size, bool Loop, bool If>
 struct coroutine_processor<void, Pos, Size, Loop, If> {
@@ -197,16 +223,8 @@ struct coroutine_processor<async_result, Pos, Size, Loop, If> {
 
       using CP = coroutine_processor<next_return, Pos + 1, Size, Loop, If>;
 
-      operation op;
-      try {
-        op = CP::process(f(), std::forward<decltype(a)>(a)...);
-      } catch (...) {
-
-        auto ep = std::current_exception();
-        f()(f().value(), ep, operation::_exception);
-        return operation::_done;
-      };
-
+      operation op =
+          process_catch_exceptions<CP>(f(), std::forward<decltype(a)>(a)...);
       if (op == operation::_done || op == operation::_return ||
           op == operation::_break) {
         f()(f().value(), nullptr, op);
@@ -359,16 +377,9 @@ auto run_helper(Finished f, A &&... a) {
   using ret_type = decltype(std::get<0>(f.tuple())(
       std::declval<DC &>(), f.value(), std::forward<A>(a)...));
 
-  operation op;
-  try {
-    op = coroutine_processor<ret_type, 0, Finished::tuple_size, IsLoop,
-                             If>::process(f, std::forward<A>(a)...);
-  } catch (...) {
-    auto ep = std::current_exception();
-    f(f.value(), ep, operation::_exception);
-    return operation::_exception;
-  };
-
+  auto op = process_catch_exceptions<
+      coroutine_processor<ret_type, 0, Finished::tuple_size, IsLoop, If>>(
+      f, std::forward<A>(a)...);
   if (op == operation::_done || op == operation::_return ||
       (If && op == operation::_continue) || (If && op == operation::_break)) {
     f(f.value(), nullptr, op);
@@ -435,15 +446,9 @@ auto while_true_finished_helper(Finished &f) {
   using ret_type =
       decltype(std::get<pos>(f.tuple())(std::declval<DC &>(), f.value()));
 
-  operation op;
-  try {
-    op = coroutine_processor<ret_type, pos, size, Context::is_loop,
-                             Context::is_if>::process(f);
-  } catch (...) {
-    auto ep = std::current_exception();
-    (f)(f.value(), ep, operation::_exception);
-    return operation::_exception;
-  };
+  auto op = process_catch_exceptions<coroutine_processor<
+      ret_type, pos, size, Context::is_loop, Context::is_if>>(f);
+
   if (op == operation::_done || op == operation::_return ||
       op == operation::_break) {
     (f)(f.value(), nullptr, op);
@@ -467,7 +472,7 @@ template <class Tuple> struct make_while_func_t {
   auto operator()(Context &context, Value &value) const {
     using context_type = std::decay_t<decltype(context)>;
 
-    auto finished = [f = context.f()](auto &value, std::exception_ptr ep,
+    auto finished = [f = context.f()](auto &value, exception_ptr ep,
                                       operation op) mutable {
       if (ep && op == operation::_exception) {
         (f)(f.value(), ep, operation::_exception);
@@ -503,7 +508,7 @@ template <class Tuple> struct make_if_func_t {
 
     return detail::run_if<context_t::is_loop, context_t::level + 1>(
         &value, tuple,
-        [context](auto &value, std::exception_ptr ep, operation op) mutable {
+        [context](auto &value, exception_ptr ep, operation op) mutable {
           auto &f = context.f();
 
           if (ep && op == operation::_exception) {
@@ -533,7 +538,7 @@ auto make_if(Pred pred, Then t, Else e) {
         return context.do_async();
 
       },
-      [](auto &context, auto &value, auto &a, std::exception_ptr e, auto op) {
+      [](auto &context, auto &value, auto &a, exception_ptr e, auto op) {
         if (op == operation::_done)
           return operation::_next;
         if (op == operation::_exception && e)
