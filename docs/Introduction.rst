@@ -45,26 +45,3 @@ However, there are issues that prevent universal adoption of these solutions
 This library is another alternative that uses C++14 generic lambdas to implement stackless coroutines without macros. The library is a single header file and has no dependencies other than C++14.
 
 
-Signatures
-----------
-
-.. cpp:function:: BlockFunction(auto& context, auto& value)
-
-	:param auto& context: :cpp:class:`stackless_coroutine::context_type`
-	:param auto& values: context
-
-.. cpp:namespace:: stackless_coroutine
-
-
-
-.. cpp:function :: template<class... BlockFunc> auto make_block(BlockFunc&& ... blockfuncs)
-
-			This is a test function
-
-			:return: returns the test value
-
-.. cpp:class:: context_type
-
-
-.. literalinclude:: ../example.cpp
-	:language: cpp
