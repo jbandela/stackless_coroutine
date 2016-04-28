@@ -129,8 +129,6 @@ auto print_url(boost::asio::io_service &io, std::string host, std::string url,
   return co(host, url);
 }
 
-#include <future>
-#include <memory>
 
 int main() {
 
