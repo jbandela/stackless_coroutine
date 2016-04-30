@@ -10,6 +10,7 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <assert.h>
 
 #ifdef STACKLESS_COROUTINE_NO_EXCEPTIONS
 namespace stackless_coroutine {
@@ -51,6 +52,9 @@ template <class F, std::size_t Pos> struct dummy_coroutine_context {
   operation do_continue() { return operation::_continue; };
   operation do_next() { return operation::_next; };
   async_result do_async() { return async_result{}; }
+  template <class Value> async_result do_async_yield(Value v) {
+    return async_result{};
+  }
   async_result do_async_return() { return async_result{}; }
   async_result do_async_break() { return async_result{}; }
   async_result do_async_continue() { return async_result{}; }
@@ -218,6 +222,11 @@ struct coroutine_processor<async_result, Pos, Size, Loop, If> {
     using base_t::f;
 
     async_result do_async() { return async_result{operation::_suspend}; }
+    template <class Value> async_result do_async_yield(Value v) {
+      f().value().stackless_coroutine_set_generator_value(std::move(v));
+      f().value().stackless_coroutine_set_generator_next(*this);
+      return do_async();
+    }
     async_result do_async_return() { return async_result{operation::_return}; }
     template <class... A> auto operator()(A &&... a) {
       using DC = dummy_coroutine_context<Finished, Pos + 1>;
@@ -653,5 +662,100 @@ auto make_coroutine(const Tuple *t, FinishedTemp f_temp, A &&... a) {
 
   return detail::coroutine_holder<v_t, const Tuple *, FinishedTemp>{
       std::move(ptr), t, std::move(f_temp)};
+}
+
+// Generator
+
+namespace detail {
+template <class Value> struct generator_base {
+  virtual Value &value_imp() = 0;
+  virtual bool valid() const = 0;
+  virtual void next() = 0;
+};
+
+template <class Value, class Variables, class Block>
+struct generator_imp : generator_base<Value> {
+  struct generator_variables_t : Variables {
+    Value stackless_coroutine_generator_value_;
+    using stackless_coroutine_function_ptr_t = operation (*)(Variables *);
+
+    stackless_coroutine_function_ptr_t stackless_coroutine_next_func_ = nullptr;
+
+    void stackless_coroutine_set_generator_value(Value v) {
+      stackless_coroutine_generator_value_ = std::move(v);
+    }
+
+    template <class Context>
+    void stackless_coroutine_set_generator_next(Context context) {
+      stackless_coroutine_next_func_ = [](Variables *v) {
+        auto context = Context::get_context(v);
+        return context();
+      };
+    }
+
+    template <class... T>
+    generator_variables_t(T &&... t) : Variables{std::forward<T>(t)...} {}
+  };
+
+  generator_variables_t *stackless_coroutine_v_ = nullptr;
+
+  template <class... T> generator_imp(Block b, T &&... t) {
+    auto co = stackless_coroutine::make_coroutine<generator_variables_t>(
+        b,
+        [this](auto &variables, std::exception_ptr ep, operation op) mutable {
+          this->stackless_coroutine_v_ = nullptr;
+        },
+        std::forward<T>(t)...);
+    stackless_coroutine_v_ = co.ptr.get();
+    co();
+  }
+  virtual Value &value_imp() override {
+    return stackless_coroutine_v_->stackless_coroutine_generator_value_;
+  }
+
+  virtual bool valid() const override {
+    assert(!(stackless_coroutine_v_ &&
+             !stackless_coroutine_v_->stackless_coroutine_next_func_));
+    return stackless_coroutine_v_ != nullptr;
+  }
+
+  virtual void next() override {
+    auto vf = stackless_coroutine_v_->stackless_coroutine_next_func_;
+    stackless_coroutine_v_->stackless_coroutine_next_func_ = nullptr;
+    vf(stackless_coroutine_v_);
+  }
+};
+}
+
+template <class Value> class generator {
+
+  std::unique_ptr<detail::generator_base<Value>> base;
+
+public:
+  explicit operator bool() {
+    if (!base)
+      return false;
+    return base->valid();
+  }
+
+  Value &value() { return base->value_imp(); }
+
+  void operator()() { base->next(); }
+
+  generator() = default;
+  generator(generator &&) = default;
+  generator &operator=(generator &&) = default;
+
+  generator(std::unique_ptr<detail::generator_base<Value>> b)
+      : base{std::move(b)} {}
+};
+
+template <class Value, class Variables, class Block, class... T>
+generator<Value> make_generator(Block b, T &&... t) {
+  std::unique_ptr<detail::generator_base<Value>> p =
+      std::make_unique<detail::generator_imp<Value, Variables, Block>>(
+          b, std::forward<T>(t)...);
+  generator<Value> g{std::move(p)};
+  return g;
 }
 }
