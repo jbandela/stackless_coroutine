@@ -44,7 +44,7 @@ struct async_result {
 
 template <class F, std::size_t Pos> struct dummy_coroutine_context {
 
-  template <class... T> void operator()(T &&... t) {}
+  template <class... T> operation operator()(T &&... t) {}
 
   operation do_return() { return operation::_return; };
   operation do_break() { return operation::_break; }
@@ -384,7 +384,7 @@ auto run_helper(Finished f, A &&... a) {
       coroutine_processor<ret_type, 0, Finished::tuple_size, IsLoop, If>>(
       f, std::forward<A>(a)...);
   if (op == operation::_done || op == operation::_return ||
-      (If && op == operation::_continue) || (If && op == operation::_break)) {
+      (If && op == operation::_continue) || (op == operation::_break)) {
     f(f.value(), nullptr, op);
   }
   return op;

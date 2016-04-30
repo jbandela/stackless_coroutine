@@ -228,6 +228,53 @@ TEST_CASE("inner and outer while if async", "[stackless]") {
               }))));
   REQUIRE(f.get() == 35);
 }
+
+TEST_CASE("inner and outer while async", "[stackless]") {
+  auto f = get_future<value_temp_t<int>>(stackless_coroutine::make_block(
+      [](auto &context, auto &value) {
+        value.return_value = 0;
+        value.inner = 0;
+        value.outer = 0;
+      },
+      stackless_coroutine::make_while_true(
+          [](auto &context, auto &value) {
+            if (value.outer >= 5) {
+              return context.do_break();
+            } else {
+              return context.do_next();
+            }
+
+          },
+          [](auto &context, auto &value) {
+            do_thread([context]() mutable { context(1); });
+            return context.do_async();
+          },
+          [](auto &context, auto &value, int aval) {
+            value.outer += aval;
+            value.inner = 0;
+          },
+          stackless_coroutine::make_while_true(
+
+              [](auto &context, auto &value) {
+
+                if (value.inner >= 7) {
+                  return context.do_break();
+                } else {
+                  return context.do_next();
+                }
+
+              },
+              [](auto &context, auto &value) {
+                do_thread([context]() mutable { context(1); });
+                return context.do_async();
+              },
+              [](auto &context, auto &value, int aval) {
+                value.return_value += aval;
+                value.inner += aval;
+              }))));
+  REQUIRE(f.get() == 35);
+}
+
 TEST_CASE("inner and outer while if async with early return", "[stackless]") {
   auto f = get_future<value_temp_t<int>>(stackless_coroutine::make_block(
       [](auto &context, auto &value) {
