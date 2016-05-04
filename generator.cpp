@@ -2,10 +2,8 @@
 #include <assert.h>
 #include <functional>
 #include <iostream>
-
-namespace stackless_coroutine {
-}
 #include <experimental/filesystem>
+
 struct variables_t {
   std::string value;
   std::experimental::filesystem::directory_iterator begin;
@@ -32,12 +30,13 @@ auto get_block() {
       },
       stackless_coroutine::make_while_true(
           [](auto &context, auto &variables) {
-            if (variables.gen)
-              return context.do_async_yield(variables.gen.value());
+            auto iter = variables.gen.begin();
+            if (iter != variables.gen.end())
+              return context.do_async_yield(std::move(*iter));
             else
               return context.do_async_break();
           },
-          [](auto &context, auto &variables) { variables.gen(); }),
+          [](auto &context, auto &variables) { ++variables.gen.begin(); }),
 
       [](auto &context, auto &variables) { ++variables.begin; }
 
@@ -56,14 +55,10 @@ int main() {
 
   auto g = get_directory_generator(".");
 
-  std::vector<std::string> vgen;
-  while (g) {
-	  std::cout << g.value() <<  "\n";
-    vgen.push_back(g.value());
-    g();
-  }
+  std::vector<std::string> vgen(g.begin(), g.end());
 
-  //Verify that we did the right thing by also checking using Filesystem TS recursive_directory_iterator
+  // Verify that we did the right thing by also checking using Filesystem TS
+  // recursive_directory_iterator
 
   std::experimental::filesystem::recursive_directory_iterator begin{"."};
   std::vector<std::string> vrdi;
@@ -75,7 +70,8 @@ int main() {
   std::sort(vgen.begin(), vgen.end());
   std::sort(vrdi.begin(), vrdi.end());
 
-  std::cout << "Generator matches recursive_directory_iterator = " << std::boolalpha
+  std::cout << "Generator matches recursive_directory_iterator = "
+            << std::boolalpha
             << std::equal(vgen.begin(), vgen.end(), vrdi.begin(), vrdi.end())
             << "\n";
 }

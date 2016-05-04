@@ -11,6 +11,7 @@
 #include <type_traits>
 #include <utility>
 #include <assert.h>
+#include <iterator>
 
 #ifdef STACKLESS_COROUTINE_NO_EXCEPTIONS
 namespace stackless_coroutine {
@@ -731,6 +732,70 @@ template <class Value> class generator {
 
   std::unique_ptr<detail::generator_base<Value>> base;
 
+  public:
+  class iterator :public std::iterator<std::input_iterator_tag, Value> {
+	  generator<Value>* gen_;
+
+
+	  void set_gen() {
+		  if (!gen_) return;
+		  if (!*gen_) {
+			  gen_ = nullptr;
+			  return;
+		  }
+	
+	  }
+
+	  void next() {
+		  gen_->next();
+		  set_gen();
+	  }
+
+	  class proxy {
+		  Value val_;
+	  public:
+		  proxy(Value v) :val_{ std::move(v) } {};
+		  Value& operator*() { return val_; }
+		  const Value& operator*()const  { return val_; }
+	  };
+  public:
+	  iterator(generator<Value>* g = nullptr) :gen_{ g } { 
+		  set_gen();
+	  }
+
+	  Value& operator*() {return gen_->value(); }
+	  const Value& operator*()const { return gen_->value(); }
+
+	  bool operator==(const iterator& other)const {
+		  return gen_ == other.gen_;
+	  }
+
+	  bool operator!=(const iterator& other)const {
+		  return gen_ != other.gen_;
+	  }
+
+
+	  iterator& operator++() {
+		  next();
+		  return *this;
+	  }
+
+
+
+	  proxy operator++(int) {
+		  proxy ret(*(*this));
+		  next();
+		  return ret;
+
+	  }
+
+
+
+
+
+  };
+
+
 public:
   explicit operator bool() {
     if (!base)
@@ -740,11 +805,19 @@ public:
 
   Value &value() { return base->value_imp(); }
 
-  void operator()() { base->next(); }
+  void next() { base->next(); }
 
   generator() = default;
   generator(generator &&) = default;
   generator &operator=(generator &&) = default;
+
+  iterator begin() {
+	   return iterator{ this };
+  }
+  iterator end() {
+	  return iterator{ };
+  }
+
 
   generator(std::unique_ptr<detail::generator_base<Value>> b)
       : base{std::move(b)} {}
