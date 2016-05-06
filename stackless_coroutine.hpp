@@ -6,12 +6,12 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <assert.h>
+#include <iterator>
 #include <memory>
 #include <tuple>
 #include <type_traits>
 #include <utility>
-#include <assert.h>
-#include <iterator>
 
 #ifdef STACKLESS_COROUTINE_NO_EXCEPTIONS
 namespace stackless_coroutine {
@@ -668,167 +668,178 @@ auto make_coroutine(const Tuple *t, FinishedTemp f_temp, A &&... a) {
 // Generator
 
 namespace detail {
-template <class Value> struct generator_base {
-  virtual Value &value_imp() = 0;
-  virtual bool valid() const = 0;
-  virtual void next() = 0;
-};
 
-template <class Value, class Variables, class Block>
-struct generator_imp : generator_base<Value> {
+using stackless_coroutine_function_ptr_t = operation (*)(void *);
+template <class Generator, class Value, class Variables, class Block>
+struct generator_imp {
   struct generator_variables_t : Variables {
-    Value stackless_coroutine_generator_value_;
-    using stackless_coroutine_function_ptr_t = operation (*)(Variables *);
-
-    stackless_coroutine_function_ptr_t stackless_coroutine_next_func_ = nullptr;
+    Generator *stackless_coroutine_generator_ = nullptr;
 
     void stackless_coroutine_set_generator_value(Value v) {
-      stackless_coroutine_generator_value_ = std::move(v);
+      stackless_coroutine_generator_->generator_value_ = std::move(v);
     }
 
     template <class Context>
     void stackless_coroutine_set_generator_next(Context context) {
-      stackless_coroutine_next_func_ = [](Variables *v) {
+      stackless_coroutine_generator_->next_func_ = [](void *v) {
         auto context = Context::get_context(v);
         return context();
+      };
+      stackless_coroutine_generator_->close_func_ = [](void *v) {
+        auto context = Context::get_context(v);
+        context.f()(*static_cast<generator_variables_t *>(v), nullptr,
+                    operation::_return);
+        ;
+        return operation::_return;
       };
     }
 
     template <class... T>
-    generator_variables_t(T &&... t) : Variables{std::forward<T>(t)...} {}
+    generator_variables_t(Generator *g, T &&... t)
+        : Variables{std::forward<T>(t)...}, stackless_coroutine_generator_{g} {}
   };
 
-  generator_variables_t *stackless_coroutine_v_ = nullptr;
-
-  template <class... T> generator_imp(Block b, T &&... t) {
+  template <class... T> static void create(Generator *g, Block b, T &&... t) {
     auto co = stackless_coroutine::make_coroutine<generator_variables_t>(
         b,
-        [this](auto &variables, std::exception_ptr ep, operation op) mutable {
-          this->stackless_coroutine_v_ = nullptr;
+        [](auto &variables, std::exception_ptr ep, operation op) mutable {
+          auto g = static_cast<generator_variables_t *>(&variables)
+                       ->stackless_coroutine_generator_;
+          g->generator_variables_ = nullptr;
+          g->next_func_ = nullptr;
+          g->close_func_ = nullptr;
+          g->move_func_ = nullptr;
         },
-        std::forward<T>(t)...);
-    stackless_coroutine_v_ = co.ptr.get();
+        g, std::forward<T>(t)...);
+    g->generator_variables_ = co.ptr.get();
+    g->move_func_ = [](void *v, Generator *g) {
+      static_cast<generator_variables_t *>(v)->stackless_coroutine_generator_ =
+          g;
+    };
     co();
-  }
-  virtual Value &value_imp() override {
-    return stackless_coroutine_v_->stackless_coroutine_generator_value_;
-  }
-
-  virtual bool valid() const override {
-    assert(!(stackless_coroutine_v_ &&
-             !stackless_coroutine_v_->stackless_coroutine_next_func_));
-    return stackless_coroutine_v_ != nullptr;
-  }
-
-  virtual void next() override {
-    auto vf = stackless_coroutine_v_->stackless_coroutine_next_func_;
-    stackless_coroutine_v_->stackless_coroutine_next_func_ = nullptr;
-    vf(stackless_coroutine_v_);
   }
 };
 }
 
 template <class Value> class generator {
 
-  std::unique_ptr<detail::generator_base<Value>> base;
+public:
+  using stackless_coroutine_move_t = void (*)(void *, generator<Value> *);
+  Value generator_value_;
 
-  public:
-  class iterator :public std::iterator<std::input_iterator_tag, Value> {
-	  generator<Value>* gen_;
+  detail::stackless_coroutine_function_ptr_t next_func_ = nullptr;
+  detail::stackless_coroutine_function_ptr_t close_func_ = nullptr;
+  stackless_coroutine_move_t move_func_ = nullptr;
 
-
-	  void set_gen() {
-		  if (!gen_) return;
-		  if (!*gen_) {
-			  gen_ = nullptr;
-			  return;
-		  }
-	
-	  }
-
-	  void next() {
-		  gen_->next();
-		  set_gen();
-	  }
-
-	  class proxy {
-		  Value val_;
-	  public:
-		  proxy(Value v) :val_{ std::move(v) } {};
-		  Value& operator*() { return val_; }
-		  const Value& operator*()const  { return val_; }
-	  };
-  public:
-	  iterator(generator<Value>* g = nullptr) :gen_{ g } { 
-		  set_gen();
-	  }
-
-	  Value& operator*() {return gen_->value(); }
-	  const Value& operator*()const { return gen_->value(); }
-
-	  bool operator==(const iterator& other)const {
-		  return gen_ == other.gen_;
-	  }
-
-	  bool operator!=(const iterator& other)const {
-		  return gen_ != other.gen_;
-	  }
-
-
-	  iterator& operator++() {
-		  next();
-		  return *this;
-	  }
-
-
-
-	  proxy operator++(int) {
-		  proxy ret(*(*this));
-		  next();
-		  return ret;
-
-	  }
-
-
-
-
-
-  };
-
+  void *generator_variables_ = nullptr;
 
 public:
-  explicit operator bool() {
-    if (!base)
-      return false;
-    return base->valid();
+  bool valid() const {
+    assert(!(generator_variables_ && next_func_ == nullptr));
+    return generator_variables_ != nullptr;
+  }
+  void next() {
+    auto vf = next_func_;
+    next_func_ = nullptr;
+    vf(generator_variables_);
   }
 
-  Value &value() { return base->value_imp(); }
+  class iterator : public std::iterator<std::input_iterator_tag, Value> {
+    generator<Value> *gen_;
 
-  void next() { base->next(); }
+    void set_gen() {
+      if (!gen_)
+        return;
+      if (!*gen_) {
+        gen_ = nullptr;
+        return;
+      }
+    }
+
+    void next() {
+      gen_->next();
+      set_gen();
+    }
+
+    class proxy {
+      Value val_;
+
+    public:
+      proxy(Value v) : val_{std::move(v)} {};
+      Value &operator*() { return val_; }
+      const Value &operator*() const { return val_; }
+    };
+
+  public:
+    iterator(generator<Value> *g = nullptr) : gen_{g} { set_gen(); }
+
+    Value &operator*() { return gen_->value(); }
+    const Value &operator*() const { return gen_->value(); }
+
+    bool operator==(const iterator &other) const { return gen_ == other.gen_; }
+
+    bool operator!=(const iterator &other) const { return gen_ != other.gen_; }
+
+    iterator &operator++() {
+      next();
+      return *this;
+    }
+
+    proxy operator++(int) {
+      proxy ret(*(*this));
+      next();
+      return ret;
+    }
+  };
+
+public:
+  explicit operator bool() { return valid(); }
+
+  Value &value() { return generator_value_; }
 
   generator() = default;
-  generator(generator &&) = default;
-  generator &operator=(generator &&) = default;
+  generator(generator &&other) { (*this) = std::move(other); }
+  generator &operator=(generator &&other) {
+    close_func_ = other.close_func_;
+    other.close_func_ = nullptr;
 
-  iterator begin() {
-	   return iterator{ this };
+    generator_value_ = std::move(other.generator_value_);
+
+    generator_variables_ = other.generator_variables_;
+    other.generator_variables_ = nullptr;
+
+    move_func_ = other.move_func_;
+    other.move_func_ = nullptr;
+
+    next_func_ = other.next_func_;
+    other.next_func_ = nullptr;
+
+    if (move_func_) {
+      move_func_(generator_variables_, this);
+    }
+    return *this;
   }
-  iterator end() {
-	  return iterator{ };
+
+  generator(const generator &) = delete;
+  generator &operator=(const generator &) = delete;
+
+  ~generator() {
+	  if (close_func_) {
+		  assert(generator_variables_ != nullptr && next_func_ != nullptr);
+		  close_func_(generator_variables_);
+	  }
   }
 
-
-  generator(std::unique_ptr<detail::generator_base<Value>> b)
-      : base{std::move(b)} {}
+  iterator begin() { return iterator{this}; }
+  iterator end() { return iterator{}; }
 };
 
 template <class Value, class Variables, class Block, class... T>
 generator<Value> make_generator(Block b, T &&... t) {
-  std::unique_ptr<detail::generator_base<Value>> p =
-      std::make_unique<detail::generator_imp<Value, Variables, Block>>(
-          b, std::forward<T>(t)...);
-  generator<Value> g{std::move(p)};
+
+  generator<Value> g;
+  detail::generator_imp<generator<Value>, Value, Variables, Block>::create(
+      &g, b, std::forward<T>(t)...);
   return g;
 }
 }

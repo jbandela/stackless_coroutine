@@ -5,7 +5,7 @@ include_directories(${Boost_INCLUDE_DIRS})
 find_package(Threads)
 add_executable(unit_test test.cpp test2.cpp)
 set_property(TARGET unit_test PROPERTY CXX_STANDARD 14)
-target_link_libraries(unit_test ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(unit_test ${CMAKE_THREAD_LIBS_INIT} stdc++fs)
 
 add_executable(async_http_client async_http_client.cpp)
 set_property(TARGET async_http_client PROPERTY CXX_STANDARD 14)

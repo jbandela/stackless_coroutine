@@ -54,6 +54,9 @@ get_directory_generator(const std::experimental::filesystem::path &p) {
 int main() {
 
   auto g = get_directory_generator(".");
+  {
+	  auto g2 = get_directory_generator(".");
+  }
 
   std::vector<std::string> vgen(g.begin(), g.end());
 
@@ -72,6 +75,5 @@ int main() {
 
   std::cout << "Generator matches recursive_directory_iterator = "
             << std::boolalpha
-            << std::equal(vgen.begin(), vgen.end(), vrdi.begin(), vrdi.end())
-            << "\n";
+            << std::equal(vgen.begin(), vgen.end(), vrdi.begin(), vrdi.end())            << "\n";
 }

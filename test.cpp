@@ -473,3 +473,111 @@ TEST_CASE("inner and outer while if async with early return using exception "
   }
   REQUIRE(1 == 2);
 }
+
+TEST_CASE("simple generator [stackless]") {
+  bool destructed = false;
+  struct variables {
+    int i = 0;
+    bool *b = nullptr;
+    ~variables() { *b = true; }
+    variables(int it, bool *bt) : i{it}, b{bt} {}
+  };
+
+  auto block =
+      stackless_coroutine::make_block(stackless_coroutine::make_while_true(
+          [](auto &context, variables &v) {
+            return context.do_async_yield(v.i);
+          },
+          [](auto &context, variables &v) { ++v.i; }));
+
+  std::vector<int> v;
+  {
+    auto gen = stackless_coroutine::make_generator<int, variables>(block, 0,
+                                                                   &destructed);
+    for (auto i : gen) {
+      v.push_back(i);
+      if (i == 10)
+        break;
+    }
+  }
+  std::vector<int> answer = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+  REQUIRE(v == answer);
+  REQUIRE(destructed == true);
+};
+
+#include <experimental/filesystem>
+namespace directory_generator {
+struct variables_t {
+  std::string value;
+  std::experimental::filesystem::directory_iterator begin;
+  std::experimental::filesystem::directory_iterator end;
+  stackless_coroutine::generator<std::string> gen;
+
+  variables_t(const std::experimental::filesystem::path &path) : begin{path} {}
+};
+
+stackless_coroutine::generator<std::string>
+get_directory_generator(const std::experimental::filesystem::path &p);
+
+inline auto get_block() {
+
+  return stackless_coroutine::make_block(stackless_coroutine::make_while_true(
+      [](auto &context, auto &variables) {
+        if (variables.begin != variables.end)
+          return context.do_async_yield(variables.begin->path().string());
+        else
+          return context.do_async_break();
+      },
+      [](auto &context, auto &variables) {
+        if (std::experimental::filesystem::is_directory(
+                variables.begin->path())) {
+          variables.gen = get_directory_generator(variables.begin->path());
+          return context.do_next();
+        } else {
+          ++variables.begin;
+          return context.do_continue();
+        }
+      },
+      stackless_coroutine::make_while_true(
+          [](auto &context, auto &variables) {
+            auto iter = variables.gen.begin();
+            if (iter != variables.gen.end())
+              return context.do_async_yield(std::move(*iter));
+            else
+              return context.do_async_break();
+          },
+          [](auto &context, auto &variables) { ++variables.gen.begin(); }),
+
+      [](auto &context, auto &variables) { ++variables.begin; }
+
+      ));
+}
+
+inline stackless_coroutine::generator<std::string>
+get_directory_generator(const std::experimental::filesystem::path &p) {
+  return stackless_coroutine::make_generator<std::string, variables_t>(
+      get_block(), p);
+}
+};
+
+TEST_CASE("directory generator [stackless]") {
+
+  auto g = directory_generator::get_directory_generator(".");
+
+  std::vector<std::string> vgen(g.begin(), g.end());
+
+  // Verify that we did the right thing by also checking using Filesystem TS
+  // recursive_directory_iterator
+
+  std::experimental::filesystem::recursive_directory_iterator begin{"."};
+  std::vector<std::string> vrdi;
+
+  for (auto &e : begin) {
+    vrdi.push_back(e.path().string());
+  }
+
+  std::sort(vgen.begin(), vgen.end());
+  std::sort(vrdi.begin(), vrdi.end());
+
+  REQUIRE(vgen == vrdi);
+}
