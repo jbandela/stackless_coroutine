@@ -104,7 +104,7 @@ struct coroutine_context : loop_base<Loop, If> {
 };
 
 template <class ReturnValue, std::size_t Pos, std::size_t Size, bool Loop,
-          bool If>
+          bool If, bool DoContinue>
 struct coroutine_processor;
 
 #ifdef STACKLESS_COROUTINE_NO_EXCEPTIONS
@@ -126,11 +126,13 @@ auto process_catch_exceptions(F &f, A &&... a) {
 
 #endif
 
-template <std::size_t Pos, std::size_t Size, bool Loop, bool If>
-struct coroutine_processor<void, Pos, Size, Loop, If> {
+template <std::size_t Pos, std::size_t Size, bool Loop, bool If,
+          bool DoContinue>
+struct coroutine_processor<void, Pos, Size, Loop, If, DoContinue> {
   enum { position = Pos };
 
-  using helper = coroutine_processor<operation, Pos, Size, Loop, If>;
+  using helper =
+      coroutine_processor<operation, Pos, Size, Loop, If, DoContinue>;
 
   template <class Finished, class... T>
   static operation process(Finished &f, T &&... results) {
@@ -142,8 +144,9 @@ struct coroutine_processor<void, Pos, Size, Loop, If> {
     return helper::do_next(f, std::integral_constant<std::size_t, Pos + 1>{});
   }
 };
-template <std::size_t Pos, std::size_t Size, bool Loop, bool If>
-struct coroutine_processor<operation, Pos, Size, Loop, If> {
+template <std::size_t Pos, std::size_t Size, bool Loop, bool If,
+          bool DoContinue>
+struct coroutine_processor<operation, Pos, Size, Loop, If, DoContinue> {
 
   enum { position = Pos };
 
@@ -159,7 +162,24 @@ struct coroutine_processor<operation, Pos, Size, Loop, If> {
     using next_return =
         decltype(std::get<P>(f.tuple())(std::declval<DC &>(), f.value()));
 
-    return coroutine_processor<next_return, P, Size, Loop, If>::process(f);
+    return coroutine_processor<next_return, P, Size, Loop, If,
+                               DoContinue>::process(f);
+  }
+  template <class Finished>
+  static operation
+  do_next_no_continue(Finished &f, std::integral_constant<std::size_t, Size>) {
+    return operation::_done;
+  }
+
+  template <class Finished, std::size_t P>
+  static operation do_next_no_continue(Finished &f,
+                                       std::integral_constant<std::size_t, P>) {
+    using DC = dummy_coroutine_context<Finished, P>;
+    using next_return =
+        decltype(std::get<P>(f.tuple())(std::declval<DC &>(), f.value()));
+
+    return coroutine_processor<next_return, P, Size, Loop, If, false>::process(
+        f);
   }
 
   template <class Finished, class... T>
@@ -171,9 +191,14 @@ struct coroutine_processor<operation, Pos, Size, Loop, If> {
     if (op == operation::_continue) {
       if (If) {
         return op;
-      } else {
-        return do_next(f, std::integral_constant < std::size_t,
-                       Loop ? 0 : Size > {});
+      } else if (DoContinue) {
+        while (true) {
+          auto op = do_next_no_continue(f, std::integral_constant < std::size_t,
+                                        Loop ? 0 : Size > {});
+          if (op != operation::_continue) {
+            return op;
+          }
+        }
       }
     } else if (op == operation::_next) {
       return do_next(f, std::integral_constant<std::size_t, Pos + 1>{});
@@ -207,8 +232,9 @@ struct get_context_from_void {
 template <class AsyncContext, class Finished>
 struct get_context_from_void<AsyncContext, Finished, false> {};
 
-template <std::size_t Pos, std::size_t Size, bool Loop, bool If>
-struct coroutine_processor<async_result, Pos, Size, Loop, If> {
+template <std::size_t Pos, std::size_t Size, bool Loop, bool If,
+          bool DoContinue>
+struct coroutine_processor<async_result, Pos, Size, Loop, If, DoContinue> {
 
   enum { position = Pos };
 
@@ -234,7 +260,8 @@ struct coroutine_processor<async_result, Pos, Size, Loop, If> {
       using next_return = decltype(std::get<Pos + 1>(f().tuple())(
           std::declval<DC &>(), f().value(), std::forward<decltype(a)>(a)...));
 
-      using CP = coroutine_processor<next_return, Pos + 1, Size, Loop, If>;
+      using CP =
+          coroutine_processor<next_return, Pos + 1, Size, Loop, If, true>;
 
       operation op =
           process_catch_exceptions<CP>(f(), std::forward<decltype(a)>(a)...);
@@ -391,7 +418,7 @@ auto run_helper(Finished f, A &&... a) {
       std::declval<DC &>(), f.value(), std::forward<A>(a)...));
 
   auto op = process_catch_exceptions<
-      coroutine_processor<ret_type, 0, Finished::tuple_size, IsLoop, If>>(
+      coroutine_processor<ret_type, 0, Finished::tuple_size, IsLoop, If, true>>(
       f, std::forward<A>(a)...);
   if (op == operation::_done || op == operation::_return ||
       (If && op == operation::_continue) || (op == operation::_break)) {
@@ -460,7 +487,7 @@ auto while_true_finished_helper(Finished &f) {
       decltype(std::get<pos>(f.tuple())(std::declval<DC &>(), f.value()));
 
   auto op = process_catch_exceptions<coroutine_processor<
-      ret_type, pos, size, Context::is_loop, Context::is_if>>(f);
+      ret_type, pos, size, Context::is_loop, Context::is_if, true>>(f);
 
   if (op == operation::_done || op == operation::_return ||
       op == operation::_break) {
@@ -824,10 +851,10 @@ public:
   generator &operator=(const generator &) = delete;
 
   ~generator() {
-	  if (close_func_) {
-		  assert(generator_variables_ != nullptr && next_func_ != nullptr);
-		  close_func_(generator_variables_);
-	  }
+    if (close_func_) {
+      assert(generator_variables_ != nullptr && next_func_ != nullptr);
+      close_func_(generator_variables_);
+    }
   }
 
   iterator begin() { return iterator{this}; }
