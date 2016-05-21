@@ -13,6 +13,8 @@
 #include <memory>
 #include <utility>
 
+#include "channel.hpp"
+
 template <class F> void do_thread(F f) {
   std::thread t{[f]() mutable { f(); }};
   t.detach();
@@ -40,6 +42,29 @@ template <class V, class T> auto get_future(T t) {
   co();
   return fut;
 }
+
+
+TEST_CASE("while if async", "[stackless]") {
+	auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
+		[](auto &context, auto &value) { value.return_value = 1; },
+		stackless_coroutine::make_while_true(
+			stackless_coroutine::make_if(
+				[](auto &value) { return value.return_value < 5; },
+				stackless_coroutine::make_block(
+					[](auto &context, auto &value) { return context.do_next(); }),
+				stackless_coroutine::make_block([](auto &context, auto &value) {
+		return context.do_break();
+	})),
+			[](auto &context, auto &value) {
+		do_thread([context]() mutable { context(1); });
+		return context.do_async();
+	},
+		[](auto &context, auto &value, int aval) {
+		value.return_value += aval;
+	})));
+	REQUIRE(f.get() == 5);
+}
+
 TEST_CASE("Simple test while", "[stackless]") {
   auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
       [](auto &context, auto &value) { value.return_value = 1; },
@@ -156,26 +181,7 @@ TEST_CASE("while async get_context", "[stackless]") {
   REQUIRE(f.get() == 5);
 }
 
-TEST_CASE("while if async", "[stackless]") {
-  auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
-      [](auto &context, auto &value) { value.return_value = 1; },
-      stackless_coroutine::make_while_true(
-          stackless_coroutine::make_if(
-              [](auto &value) { return value.return_value < 5; },
-              stackless_coroutine::make_block(
-                  [](auto &context, auto &value) { return context.do_next(); }),
-              stackless_coroutine::make_block([](auto &context, auto &value) {
-                return context.do_break();
-              })),
-          [](auto &context, auto &value) {
-            do_thread([context]() mutable { context(1); });
-            return context.do_async();
-          },
-          [](auto &context, auto &value, int aval) {
-            value.return_value += aval;
-          })));
-  REQUIRE(f.get() == 5);
-}
+
 
 template <class R> struct value_temp_t {
   R return_value;
@@ -580,4 +586,100 @@ TEST_CASE("directory generator [stackless]") {
   std::sort(vrdi.begin(), vrdi.end());
 
   REQUIRE(vgen == vrdi);
+}
+
+TEST_CASE("many loop while [stackless]") {
+	auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
+		[](auto &context, auto &value) { value.return_value = 1; },
+		stackless_coroutine::make_while_true([](auto &context, auto &value) {
+		++value.return_value;
+		if (value.return_value > 9999)
+			return context.do_return();
+		else
+			return context.do_continue();
+	})
+
+	));
+	REQUIRE(f.get() == 10000);
+}
+
+TEST_CASE("simple channel [stackless]") {
+
+	auto chan = std::make_shared<channel<int>>();
+
+	int total = 0;
+
+	struct reader_variables {
+		channel_reader<int> rchan;
+		int* result = nullptr;
+
+		reader_variables(std::shared_ptr<channel<int>> pchan, int* r) :rchan{ pchan }, result{ r } {}
+	};
+
+	auto reader_block = stackless_coroutine::make_block(
+		stackless_coroutine::make_while_true(
+			[](auto& context, reader_variables& variables) {
+		if (variables.rchan.read(context)) {
+			return context.do_async();
+				}
+		else {
+			return context.do_async_break();
+		}
+
+			},
+			[](auto& context, reader_variables& variables,void* channel, int& value) {
+				//if (variables.rchan.closed()) return context.do_break();
+				(*variables.result) += value;
+				return context.do_continue();
+			}
+
+		)
+
+	);
+
+	struct writer_variables {
+		channel_writer<int> wchan;
+		int counter = 0;
+
+		writer_variables(std::shared_ptr<channel<int>> pchan, int c) :wchan{ pchan }, counter{ c } {}
+	};
+
+
+	auto writer_block = stackless_coroutine::make_block(
+		stackless_coroutine::make_while_true(
+			[](auto& context, writer_variables& variables) {
+		if (variables.counter <= 10000) {
+			variables.wchan.write(variables.counter, context);
+			return context.do_async();
+				}
+		else {
+			return context.do_async_break();
+		}
+
+			},
+			[](auto& context, writer_variables& variables,void* channel, int& value) {
+				++variables.counter;
+			}
+
+		)
+
+	);
+	auto rco = stackless_coroutine::make_coroutine<reader_variables>(reader_block, [](auto&&...) {}, chan, &total);
+	auto wco = stackless_coroutine::make_coroutine<writer_variables>(writer_block, [](auto&&...) {get_channel_executor().close();}, chan, 0);
+
+	rco();
+	wco();
+
+	get_channel_executor().run();
+
+
+
+
+
+
+
+
+
+
+  REQUIRE(total == 55);
 }
