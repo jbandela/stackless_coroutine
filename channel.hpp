@@ -15,7 +15,7 @@ namespace detail {
     node_base *previous = nullptr;
     void *data = nullptr;
     function_t func = nullptr;
-    std::atomic<void *> channel{nullptr};
+	bool closed = false;
   };
 
 
@@ -55,7 +55,8 @@ namespace detail {
     if (tail == node) {
       tail = node->previous;
     }
-	node->channel = nullptr;
+	node->next = nullptr;
+	node->previous = nullptr;
     return node;
   }
 
@@ -76,7 +77,7 @@ struct channel_executor {
   node_base *tail = nullptr;
 
   std::atomic<bool> closed{ false };
-  std::atomic<bool> running{ false };
+  std::atomic<unsigned int> running{ 0 };
   std::mutex mut;
   using lock_t = std::unique_lock<std::mutex>;
   std::condition_variable cvar;
@@ -94,14 +95,11 @@ struct channel_executor {
   }
 
   void run() {
-	  auto set_false = [&](void *) {running = false;finished_running.notify_all();};
+	  auto set_false = [&](void *) {--running;finished_running.notify_all();};
 
 	  std::unique_ptr<void, std::decay_t<decltype(set_false)>> false_setter{ &running,set_false };
 
-	  {
-		  lock_t lock{ mut };
-		  running = true;
-	  }
+	  ++running;
 
 	  while (true) {
 
@@ -133,8 +131,8 @@ struct channel_executor {
 	  close();
 
 	  lock_t lock{ mut };
-	  while (running) {
-		  finished_running.wait(lock);
+	  while (running.load() > 0) {
+		  finished_running.wait_for(lock, std::chrono::seconds{ 5 });
 	  }
 
 
@@ -168,7 +166,7 @@ namespace detail {
 
 channel_executor& get_channel_executor() {
 	static channel_executor e;
-	//static detail::channel_runner cr{ &e };
+	static detail::channel_runner cr{ &e };
 	return e;
 }
 
@@ -187,20 +185,25 @@ template <class T> struct channel {
 
   channel_executor* executor = nullptr;
 
+
   bool write(node_t *writer) {
 	  if (closed) return false;
 	  lock_t lock{ mut };
 	  auto reader = static_cast<node_t*>(detail::remove_helper(read_head, read_tail, read_head.load()));
-	  if (reader && reader->pdone && reader->pdone->exchange(true) == true) reader = nullptr;
+	  while (reader && reader->pdone && reader->pdone->exchange(true) == true) {
+		  reader = static_cast<node_t*>(detail::remove_helper(read_head, read_tail, read_head.load()));
+	  }
 	  if (!reader) {
 		  detail::add(write_head, write_tail, writer);
 	  }
 	  else {
 		  lock.unlock();
-		  reader->channel = nullptr;
 		  assert(reader->func);
 		  assert(writer->func);
 		  reader->value = std::move(writer->value);
+
+		  reader->closed = false;
+		  writer->closed = false;
 
 		  executor->add(reader);
 		  executor->add(writer);
@@ -211,16 +214,20 @@ template <class T> struct channel {
 	  if (closed) return false;
 	  lock_t lock{ mut };
 	  auto writer = static_cast<node_t*>(detail::remove_helper(write_head, write_tail, write_head.load()));
-	  if (writer && writer->pdone && writer->pdone->exchange(true) == true) writer = nullptr;
+	  while (writer && writer->pdone && writer->pdone->exchange(true) == true) {
+		  writer = static_cast<node_t*>(detail::remove_helper(write_head, write_tail, write_head.load()));
+	  }
 	  if (!writer) {
-		  reader->channel = this;
 		  detail::add(read_head, read_tail, reader);
 	  }
 	  else {
 		  lock.unlock();
-		  writer->channel = nullptr;
 		  assert(writer->func);
 		  T value{ std::move(writer->value) };
+
+		  writer->closed = false;
+		  reader->closed = false;
+
 		  executor->add(writer);
 		  executor->add(reader);
 	  }
@@ -229,15 +236,11 @@ template <class T> struct channel {
 
   void remove_reader(node_t* reader) {
 	  lock_t lock{ mut };
-	  if (reader->channel != this) return;
-	  reader->channel = nullptr;
 	  detail::remove_helper(read_head, read_tail, reader);
   }
 
   void remove_writer(node_t* writer) {
 	  lock_t lock{ mut };
-	  if (writer->channel != this) return;
-	  writer->channel = nullptr;
 	  detail::remove_helper(write_head, write_tail, writer);
   }
 
@@ -245,12 +248,12 @@ template <class T> struct channel {
 	  closed = true;
 	  lock_t lock{ mut };
 
-	  auto writers = write_head;
+	  auto writers = write_head.load();
 
 	  write_head = nullptr;
 	  write_tail = nullptr;
 
-	  auto readers = read_head;
+	  auto readers = read_head.load();
 
 	  read_head = nullptr;
 	  read_tail = nullptr;
@@ -259,13 +262,13 @@ template <class T> struct channel {
 
 	  // Clear out all the writers
 	  for (auto n = static_cast<node_t*>(writers);n != nullptr; n = static_cast<node_t*>(n->next)) {
-		  n->channel = nullptr;
+		  n->closed = true;
 		  executor->add(n);
 	  }
 
 	  // Clear out all the readers
 	  for (auto n = static_cast<node_t*>(readers);n != nullptr; n = static_cast<node_t*>(n->next)) {
-		  n->channel = nullptr;
+		  n->closed = true;
 		  executor->add(n);
 	  }
 
@@ -277,15 +280,15 @@ template <class T> struct channel {
 
 };
 
-template <class T> struct channel_reader {
+template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_reader {
 
 	using node_t = typename channel<T>::node_t;
 	node_t node{};
 
-	std::shared_ptr<channel<T>> ptr;
+	PtrType ptr;
 
-	void* get_channel() {
-		return ptr->get();
+	const void* get_node() const {
+		return &node;
 	}
 	template<class Context>
 	bool read(Context context) {
@@ -294,13 +297,13 @@ template <class T> struct channel_reader {
 
 		auto node = static_cast<node_t*>(n);
 			auto context = Context::get_context(node->data);
-			context(node->channel, node->value);
+			context(node, node->value,node->closed);
 		};
 		node.data = &context.f().value();
 		return ptr->read(&node);
 	}
 
-	explicit channel_reader(std::shared_ptr<channel<T>> p) :ptr{ p } {}
+	explicit channel_reader(PtrType p) :ptr{ p } {}
 	~channel_reader() {
 		ptr->remove_reader(&node);
 	}
@@ -308,18 +311,16 @@ template <class T> struct channel_reader {
 
 
 };
-template <class T> struct channel_writer {
+template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_writer {
 
 	using node_t = typename channel<T>::node_t;
 	node_t node{};
 
-	std::shared_ptr<channel<T>> ptr;
+	PtrType ptr;
 
-	void* get_channel() {
-		return ptr->get();
+	const void* get_node() const {
+		return &node;
 	}
-
-
 	template<class Context>
 	bool write(T t, Context context) {
 		node.value = std::move(t);
@@ -327,14 +328,14 @@ template <class T> struct channel_writer {
 	node.func = [](void* n) {
 		auto node = static_cast<node_t*>(n);
 			auto context = Context::get_context(node->data);
-			context(node->channel, node->value);
+			context(node, node->closed);
 		};
 	
 		node.data = &context.f().value();
 		return ptr->write(&node);
 	}
 
-	explicit channel_writer(std::shared_ptr<channel<T>> p) :ptr{ p } {}
+	explicit channel_writer(PtrType p) :ptr{ p } {}
 
 	~channel_writer() {
 		ptr->remove_writer(&node);

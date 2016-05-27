@@ -607,6 +607,7 @@ TEST_CASE("simple channel [stackless]") {
 
 	auto chan = std::make_shared<channel<int>>();
 
+	static constexpr int max = 10000;
 	int total = 0;
 
 	struct reader_variables {
@@ -627,8 +628,10 @@ TEST_CASE("simple channel [stackless]") {
 		}
 
 			},
-			[](auto& context, reader_variables& variables,void* channel, int& value) {
-				//if (variables.rchan.closed()) return context.do_break();
+			[](auto& context, reader_variables& variables,void* channel, int& value, bool closed) {
+				if (closed) {
+					return context.do_break();
+				}
 				(*variables.result) += value;
 				return context.do_continue();
 			}
@@ -648,29 +651,36 @@ TEST_CASE("simple channel [stackless]") {
 	auto writer_block = stackless_coroutine::make_block(
 		stackless_coroutine::make_while_true(
 			[](auto& context, writer_variables& variables) {
-		if (variables.counter <= 10000) {
+		if (variables.counter <= max) {
 			variables.wchan.write(variables.counter, context);
 			return context.do_async();
 				}
 		else {
+			variables.wchan.ptr->close();
 			return context.do_async_break();
 		}
 
 			},
-			[](auto& context, writer_variables& variables,void* channel, int& value) {
+			[](auto& context, writer_variables& variables,void* channel, bool closed) {
 				++variables.counter;
 			}
 
 		)
 
 	);
-	auto rco = stackless_coroutine::make_coroutine<reader_variables>(reader_block, [](auto&&...) {}, chan, &total);
-	auto wco = stackless_coroutine::make_coroutine<writer_variables>(writer_block, [](auto&&...) {get_channel_executor().close();}, chan, 0);
+	std::mutex m;
+	std::condition_variable cvar;
+	std::atomic<int> finished{ 0 };
+	auto rco = stackless_coroutine::make_coroutine<reader_variables>(reader_block, [&](auto&&...) {++finished;cvar.notify_one();}, chan, &total);
+	auto wco = stackless_coroutine::make_coroutine<writer_variables>(writer_block, [&](auto&&...) {++finished;cvar.notify_one();}, chan, 0);
 
 	rco();
 	wco();
 
-	get_channel_executor().run();
+	std::unique_lock<std::mutex> lock{ m };
+	while (finished.load() < 2) {
+		cvar.wait(lock);
+	}
 
 
 
@@ -681,5 +691,7 @@ TEST_CASE("simple channel [stackless]") {
 
 
 
-  REQUIRE(total == 55);
+
+ 
+  REQUIRE(total == (max*max + max)/2);
 }

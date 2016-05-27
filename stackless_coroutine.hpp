@@ -658,7 +658,7 @@ struct value_t : Value {
 template <class Value, class Tuple, class FinishedTemp>
 struct coroutine_holder {
 
-  std::unique_ptr<Value> ptr;
+  Value ptr;
   Tuple t;
   FinishedTemp f_temp;
   template <class... A> explicit operator bool() { return ptr.get(); }
@@ -688,9 +688,27 @@ auto make_coroutine(const Tuple *t, FinishedTemp f_temp, A &&... a) {
 
   auto ptr = std::make_unique<v_t>(std::forward<A>(a)...);
 
-  return detail::coroutine_holder<v_t, const Tuple *, FinishedTemp>{
+  return detail::coroutine_holder<std::unique_ptr<v_t>, const Tuple *, FinishedTemp>{
       std::move(ptr), t, std::move(f_temp)};
 }
+
+template<class Variables, std::size_t levels = 5, std::size_t size = 3*sizeof(void*), std::size_t level_size = 3*sizeof(Variables*)>
+using variables_t = detail::value_t < Variables, size,level_size , levels > ;
+
+template <class Value, class Tuple, class FinishedTemp>
+auto make_coroutine(Value& variables,const Tuple *t, FinishedTemp f_temp) {
+  struct dummy {
+    Value *v;
+  };
+  dummy d;
+  auto dummy_f = [d]() {};
+
+
+  return detail::coroutine_holder<Value*, const Tuple *, FinishedTemp>{
+      &variables, t, std::move(f_temp)};
+}
+
+
 
 // Generator
 
