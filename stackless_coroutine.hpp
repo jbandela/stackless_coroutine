@@ -692,7 +692,7 @@ auto make_coroutine(const Tuple *t, FinishedTemp f_temp, A &&... a) {
       std::move(ptr), t, std::move(f_temp)};
 }
 
-template<class Variables, std::size_t levels = 5, std::size_t size = 3*sizeof(void*), std::size_t level_size = 3*sizeof(Variables*)>
+template<class Variables, std::size_t levels = 5, std::size_t size = 3*sizeof(void*), std::size_t level_size = sizeof(Variables*)>
 using variables_t = detail::value_t < Variables, size,level_size , levels > ;
 
 template <class Value, class Tuple, class FinishedTemp>
