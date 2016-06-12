@@ -3,6 +3,8 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <condition_variable>
 
 
 namespace detail {

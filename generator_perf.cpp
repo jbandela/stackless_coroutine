@@ -1,7 +1,10 @@
 #include "stackless_coroutine.hpp"
+#include "channel.hpp"
+#include <vector>
+
+#ifdef _MSC_VER
 #include <experimental/coroutine>
 #include <experimental/generator>
-#include "channel.hpp"
 
 
 std::experimental::generator<std::uint32_t> test_co_yield(std::uint32_t count) {
@@ -9,6 +12,8 @@ std::experimental::generator<std::uint32_t> test_co_yield(std::uint32_t count) {
 		co_yield i;
 	}
 }
+
+#endif
 
 stackless_coroutine::generator<std::uint32_t> test_stackless(std::uint32_t count) {
 	struct variables {
@@ -189,6 +194,7 @@ auto make_starter(channel<uint32_t>* inchan, channel<uint32_t>* outchan, std::pr
 #include <chrono>
 int main() {
 
+  using dur = std::chrono::duration<float, std::ratio<1, 1>>;
 	while(true){
 		std::uint32_t count = 0;
 		std::cin >> count;
@@ -249,20 +255,20 @@ int main() {
 			}
 			auto end = std::chrono::steady_clock::now();
 
-			std::cout << "Took " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << " microseconds to init " << count << " coroutines\n Starting first \n";
+			std::cout << "Took " << std::chrono::duration_cast<dur>(end - start).count() << " seconds to init " << count << " coroutines\n Starting first \n";
 
 			std::promise<std::uint32_t> promise;
 			auto fut = promise.get_future();
 			auto starter_co = make_starter(&channels[count], &channels[0], std::move(promise));
 
 			start = std::chrono::steady_clock::now();
-			starter_co(1);
+			starter_co(0);
 
 			auto value = fut.get();
 			end = std::chrono::steady_clock::now();
 
 
-			std::cout << "Took " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << " to run " << count << " coroutines\n";
+			std::cout << "Took " << std::chrono::duration_cast<dur>(end - start).count() << "seconds to run " << count << " coroutines\n";
 			std::cout << "Result = " << value << "\n";
 			vec.clear();
 			delete[] channels;
@@ -275,6 +281,7 @@ int main() {
 	}
 
 #ifdef _MSC_VER
+
 
 	while (true) {
 		std::uint32_t count = 0;
@@ -290,7 +297,7 @@ int main() {
 
 			auto end = std::chrono::steady_clock::now();
 
-			std::cout << "calculated value of " << sum << " in " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << "microseconds\n";
+			std::cout << "calculated value of " << sum << " in " << std::chrono::duration_cast<dur>(end - start).count() << "microseconds\n";
 
 		}
 
@@ -303,7 +310,7 @@ int main() {
 
 			auto end = std::chrono::steady_clock::now();
 
-			std::cout << "calculated value of " << sum << " in " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << "microseconds\n";
+			std::cout << "calculated value of " << sum << " in " << std::chrono::duration_cast<dur>(end - start).count() << "microseconds\n";
 
 		}
 
