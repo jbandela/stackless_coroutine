@@ -30,6 +30,7 @@ namespace detail {
       tail = node;
       head = node;
     } else {
+		assert(head != node);
       assert(tail != nullptr);
       node->next = nullptr;
       node->previous = tail;
@@ -208,7 +209,9 @@ template <class T> struct channel {
 		  writer->closed = false;
 
 		  executor->add(reader);
-		  executor->add(writer);
+		  if (!writer->pdone || writer->pdone->exchange(true) == false) {
+			  executor->add(writer);
+		  }
 	  }
 	  return true;
   }
@@ -231,7 +234,10 @@ template <class T> struct channel {
 		  reader->closed = false;
 
 		  executor->add(writer);
-		  executor->add(reader);
+
+		  if (!reader->pdone || reader->pdone->exchange(true) == false) {
+			  executor->add(reader);
+		  }
 	  }
 	  return true;
   }
@@ -263,15 +269,24 @@ template <class T> struct channel {
 	  lock.unlock();
 
 	  // Clear out all the writers
-	  for (auto n = static_cast<node_t*>(writers);n != nullptr; n = static_cast<node_t*>(n->next)) {
-		  n->closed = true;
-		  executor->add(n);
+	  for (auto n = static_cast<node_t*>(writers);n != nullptr;) {
+		  auto old = n;
+		  n = static_cast<node_t*>(n->next);
+
+		  old->closed = true;
+		  if (!old->pdone || old->pdone->exchange(true) == false) {
+			  executor->add(old);
+		  }
 	  }
 
 	  // Clear out all the readers
-	  for (auto n = static_cast<node_t*>(readers);n != nullptr; n = static_cast<node_t*>(n->next)) {
-		  n->closed = true;
-		  executor->add(n);
+	  for (auto n = static_cast<node_t*>(readers);n != nullptr; ) {
+		  auto old = n;
+		  n = static_cast<node_t*>(n->next);
+		  old->closed = true;
+		  if (!old->pdone || old->pdone->exchange(true) == false) {
+			  executor->add(old);
+		  }
 	  }
 
 
@@ -282,14 +297,21 @@ template <class T> struct channel {
 
 };
 
+namespace detail {
+	struct void_holder {
+		void* value;
+	};
+}
+
 template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_reader {
 
 	using node_t = typename channel<T>::node_t;
 	node_t node{};
 
+	using value_type = T;
 	PtrType ptr;
 
-	const void* get_node() const {
+	auto get_node() const {
 		return &node;
 	}
 	template<class Context>
@@ -304,6 +326,24 @@ template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_re
 		node.data = &context.f().value();
 		return ptr->read(&node);
 	}
+	template<class Select,class Context>
+	bool read(Select& s,Context context) {
+
+		node.func = [](void* n) {
+
+		auto node = static_cast<node_t*>(n);
+			auto context = Context::get_context(node->data);
+			context(node, detail::void_holder{ &node->value }, node->closed);
+		};
+		node.data = &context.f().value();
+		node.pdone = &s.done;
+		return ptr->read(&node);
+	}
+	void remove() {
+		ptr->remove_reader(&node);
+	}
+
+
 
 	explicit channel_reader(PtrType p) :ptr{ p } {}
 	~channel_reader() {
@@ -320,7 +360,7 @@ template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_wr
 
 	PtrType ptr;
 
-	const void* get_node() const {
+	auto get_node() const {
 		return &node;
 	}
 	template<class Context>
@@ -336,6 +376,24 @@ template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_wr
 		node.data = &context.f().value();
 		return ptr->write(&node);
 	}
+	template<class Select,class Context>
+	bool write(T t,Select& s, Context context) {
+		node.value = std::move(t);
+
+	node.func = [](void* n) {
+		auto node = static_cast<node_t*>(n);
+			auto context = Context::get_context(node->data);
+			context(node, node->closed);
+		};
+	
+		node.data = &context.f().value();
+		node.pdone = &s.done;
+		return ptr->write(&node);
+	}
+
+	void remove() {
+		ptr->remove_writer(&node);
+	}
 
 	explicit channel_writer(PtrType p) :ptr{ p } {}
 
@@ -348,5 +406,98 @@ template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_wr
 
 struct channel_selector {
 	std::atomic<bool> done{ false };
+
+	struct select_helper_reader {
+		channel_selector* sel = nullptr;
+		detail::node_base* channel = nullptr;
+		detail::void_holder value;
+		bool success = false;
+		select_helper_reader(channel_selector* s, detail::node_base* channel, detail::void_holder value) :sel{ s }, channel{ channel }, value{ value } {}
+		template<class ChannelReader, class F>
+		select_helper_reader& select(ChannelReader& c, F&& f) {
+			c.remove();
+			if (channel == c.get_node()) {
+				using value_type = typename ChannelReader::value_type;
+				success = true;
+				f(*static_cast<value_type*>(value.value));
+			}
+			return *this;
+
+
+		}
+
+		template<class Range, class F>
+		select_helper_reader& select_range(Range& r, F&& f) {
+			for (auto& c : r) {
+				c.remove();
+				if (channel == c.get_node()) {
+					using ChannelReader = std::decay_t<decltype(c)>;
+					using value_type = typename ChannelReader::value_type;
+					success = true;
+					f(*static_cast<value_type*>(value.value));
+				}
+			}
+			return *this;
+
+
+		}
+
+
+		explicit operator bool()const { return success; }
+
+		~select_helper_reader(){
+			sel->done = false;
+		}
+
+
+	};
+	struct select_helper_writer {
+		channel_selector* sel = nullptr;
+		detail::node_base* channel = nullptr;
+		bool success = false;
+		select_helper_writer(channel_selector* s, detail::node_base* channel) :sel{ s }, channel{ channel }{}
+		template<class ChannelReader, class F>
+		select_helper_writer& select(ChannelReader& c, F&& f) {
+			c.remove();
+			if (channel == c.get_node()) {
+				success = true;
+				f();
+			}
+			return *this;
+
+
+		}
+		template<class Range, class F>
+		select_helper_writer& select_range(Range& r, F&& f) {
+			for (auto& c : r) {
+				c.remove();
+				if (channel == c.get_node()) {
+					success = true;
+					f();
+				}
+			}
+			return *this;
+
+		}
+
+
+		~select_helper_writer() {
+			sel->done = false;
+		}
+
+		explicit operator bool()const { return success; }
+
+	};
+
+	auto get_selector(detail::node_base* channel) {
+		return select_helper_writer{this, channel };
+	}
+	auto get_selector(detail::node_base* channel, detail::void_holder value) {
+		return select_helper_reader{this, channel,value };
+	}
+
+
+
+
 
 };
