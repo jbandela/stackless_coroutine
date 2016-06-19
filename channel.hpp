@@ -12,7 +12,7 @@ namespace detail {
   using channel_function_t = void (*)(void* node);
   struct node_base {
 	  using function_t = channel_function_t;
-    std::atomic<bool> *pdone = nullptr;
+    std::atomic<int> *pdone = nullptr;
     node_base *next = nullptr;
     node_base *previous = nullptr;
     void *data = nullptr;
@@ -38,6 +38,24 @@ namespace detail {
       tail = node;
     }
   }
+  // Assumes lock has already been taken
+  inline void add_head(std::atomic<node_base *> &head, node_base *&tail, node_base *node) {
+	  if (!head.load()) {
+		  node->next = nullptr;
+		  node->previous = nullptr;
+		  tail = node;
+		  head = node;
+	  }
+	  else {
+		  assert(head != node);
+		  assert(tail != nullptr);
+		  node->next = head;
+		  node->previous = nullptr;
+		  head.load()->previous = node;
+		  head = node;
+	  }
+  }
+
 
   // Assumes lock has already been taken
   inline node_base *remove_helper(std::atomic<node_base *> &head, node_base *&tail, node_base *node) {
@@ -173,6 +191,7 @@ channel_executor& get_channel_executor() {
 	return e;
 }
 
+
 template <class T> struct channel {
 	using node_t = detail::node_t<T>;
 	using node_base = detail::node_base;
@@ -188,18 +207,61 @@ template <class T> struct channel {
 
   channel_executor* executor = nullptr;
 
+	// 0 = not done, 1 = done, -1 = indeterminate
+	static bool set_done(std::atomic<int>* pdone, int expected, int value) {
+		if (!pdone) return true;
+
+		while (true) {
+			int exp = expected;
+			if (pdone->compare_exchange_strong(exp, value)) {
+				return true;
+			}
+			if (exp == 1) {
+				// somebody else set it to done, we will never succeed
+				return false;
+			}
+			// it is indeterminate - keep looping;
+			assert(exp == -1);
+		}
+
+	}
+
+
+  static bool set_intermediate(std::atomic<int>* pdone) {
+	  return set_done(pdone, 0, -1);
+  }
+  static bool clear_intermediate_success(std::atomic<int>* pdone) {
+	  return set_done(pdone, -1, 1);
+  }
+  static bool clear_intermediate_failure(std::atomic<int>* pdone) {
+	  return set_done(pdone, -1, 0);
+  }
+  static bool set_success(std::atomic<int>* pdone) {
+	  return set_done(pdone, 0, 1);
+  }
+
+
+
+
+
 
   bool write(node_t *writer) {
 	  if (closed) return false;
 	  lock_t lock{ mut };
 	  auto reader = static_cast<node_t*>(detail::remove_helper(read_head, read_tail, read_head.load()));
-	  while (reader && reader->pdone && reader->pdone->exchange(true) == true) {
+	  while (reader && !set_intermediate(reader->pdone)) {
 		  reader = static_cast<node_t*>(detail::remove_helper(read_head, read_tail, read_head.load()));
 	  }
 	  if (!reader) {
 		  detail::add(write_head, write_tail, writer);
 	  }
 	  else {
+		  if (!set_success(writer->pdone)) {
+			  detail::add_head(read_head, read_tail, reader);
+			  clear_intermediate_failure(reader->pdone);
+			  return true;
+		  }
+		  clear_intermediate_success(reader->pdone);
 		  lock.unlock();
 		  assert(reader->func);
 		  assert(writer->func);
@@ -209,9 +271,7 @@ template <class T> struct channel {
 		  writer->closed = false;
 
 		  executor->add(reader);
-		  if (!writer->pdone || writer->pdone->exchange(true) == false) {
-			  executor->add(writer);
-		  }
+		  executor->add(writer);
 	  }
 	  return true;
   }
@@ -219,13 +279,19 @@ template <class T> struct channel {
 	  if (closed) return false;
 	  lock_t lock{ mut };
 	  auto writer = static_cast<node_t*>(detail::remove_helper(write_head, write_tail, write_head.load()));
-	  while (writer && writer->pdone && writer->pdone->exchange(true) == true) {
+	  while (writer && !set_intermediate(writer->pdone)) {
 		  writer = static_cast<node_t*>(detail::remove_helper(write_head, write_tail, write_head.load()));
 	  }
 	  if (!writer) {
 		  detail::add(read_head, read_tail, reader);
 	  }
 	  else {
+		  if (!set_success(reader->pdone)) {
+			  detail::add_head(write_head, write_tail, writer);
+			  clear_intermediate_failure(writer->pdone);
+			  return true;
+		  }
+		  clear_intermediate_success(writer->pdone);
 		  lock.unlock();
 		  assert(writer->func);
 		  T value{ std::move(writer->value) };
@@ -235,9 +301,7 @@ template <class T> struct channel {
 
 		  executor->add(writer);
 
-		  if (!reader->pdone || reader->pdone->exchange(true) == false) {
-			  executor->add(reader);
-		  }
+		  executor->add(reader);
 	  }
 	  return true;
   }
@@ -274,7 +338,7 @@ template <class T> struct channel {
 		  n = static_cast<node_t*>(n->next);
 
 		  old->closed = true;
-		  if (!old->pdone || old->pdone->exchange(true) == false) {
+		  if (set_success(old->pdone)) {
 			  executor->add(old);
 		  }
 	  }
@@ -284,7 +348,7 @@ template <class T> struct channel {
 		  auto old = n;
 		  n = static_cast<node_t*>(n->next);
 		  old->closed = true;
-		  if (!old->pdone || old->pdone->exchange(true) == false) {
+		  if (set_success(old->pdone)) {
 			  executor->add(old);
 		  }
 	  }
@@ -405,7 +469,7 @@ template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_wr
 
 
 struct channel_selector {
-	std::atomic<bool> done{ false };
+	std::atomic<int> done{ 0 };
 
 	struct select_helper_reader {
 		channel_selector* sel = nullptr;
@@ -446,7 +510,7 @@ struct channel_selector {
 		explicit operator bool()const { return success; }
 
 		~select_helper_reader(){
-			sel->done = false;
+			sel->done = 0;
 		}
 
 
@@ -482,7 +546,7 @@ struct channel_selector {
 
 
 		~select_helper_writer() {
-			sel->done = false;
+			sel->done = 0;
 		}
 
 		explicit operator bool()const { return success; }
