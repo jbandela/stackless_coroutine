@@ -565,3 +565,167 @@ struct channel_selector {
 
 
 };
+
+#ifdef _MSC_VER
+#include <experimental/coroutine>
+struct goroutine{
+struct promise_type
+{
+	bool initial_suspend() {
+		return false;
+	}
+	bool final_suspend() {
+		return false;
+	}
+	void return_void() {}
+	void set_exception(std::exception_ptr) {}
+	goroutine get_return_object() {
+		return{};
+	}
+};
+};
+
+template <class T, class PtrType = std::shared_ptr<channel<T>>> struct await_channel_reader {
+
+	using node_t = typename channel<T>::node_t;
+	node_t node{};
+
+	using value_type = T;
+	PtrType ptr;
+
+	auto get_node() const {
+		return &node;
+	}
+	auto read() {
+		struct awaiter {
+			await_channel_reader* pthis;
+
+			bool await_ready() {
+				return false;
+			}
+			void await_suspend(std::experimental::coroutine_handle<> rh) {
+				auto& node = pthis->node;
+				node.func = [](void* n) {
+					auto node = static_cast<node_t*>(n);
+					auto rh = std::experimental::coroutine_handle<>::from_address(node->data);
+					rh();
+				};
+				node.data = rh.to_address();;
+				if (!pthis->ptr->read(&pthis->node)) {
+					pthis = nullptr;
+					rh();
+				}
+			}
+			auto await_resume() {
+				if (pthis) {
+					return std::make_pair(!pthis->node.closed, pthis->node.value);
+				}
+				else {
+					return std::make_pair(false, pthis->node.value);
+				}
+			}
+		};
+		return awaiter{ this };
+
+	}
+	//template<class Select, class Context>
+	//bool read(Select& s, Context context) {
+
+	//	node.func = [](void* n) {
+
+	//		auto node = static_cast<node_t*>(n);
+	//		auto context = Context::get_context(node->data);
+	//		context(node, detail::void_holder{ &node->value }, node->closed);
+	//	};
+	//	node.data = &context.f().value();
+	//	node.pdone = &s.done;
+	//	return ptr->read(&node);
+	//}
+	void remove() {
+		ptr->remove_reader(&node);
+	}
+
+
+
+	explicit await_channel_reader(PtrType p) :ptr{ p } {}
+	~await_channel_reader() {
+		ptr->remove_reader(&node);
+	}
+
+
+
+};
+
+
+template <class T, class PtrType = std::shared_ptr<channel<T>>> struct await_channel_writer {
+
+	using node_t = typename channel<T>::node_t;
+	node_t node{};
+
+	PtrType ptr;
+
+	auto get_node() const {
+		return &node;
+	}
+	auto write(T t) {
+		node.value = std::move(t);
+		struct awaiter {
+			await_channel_writer* pthis;
+
+			bool await_ready() {
+				return false;
+			}
+			void await_suspend(std::experimental::coroutine_handle<> rh) {
+				pthis->node.func = [](void* n) {
+					auto node = static_cast<node_t*>(n);
+					auto rh = std::experimental::coroutine_handle<>::from_address(node->data);
+					rh();
+				};
+				pthis->node.data = rh.to_address();;
+				if (!pthis->ptr->write(&pthis->node)) {
+					pthis = nullptr;
+					rh();
+				}
+			}
+			auto await_resume() {
+				if (pthis) {
+					return pthis->node.closed;
+				}
+				else {
+					return false;
+				}
+			}
+		};
+		return awaiter{ this };
+
+	}
+	//template<class Select, class Context>
+	//bool write(T t, Select& s, Context context) {
+	//	node.value = std::move(t);
+
+	//	node.func = [](void* n) {
+	//		auto node = static_cast<node_t*>(n);
+	//		auto context = Context::get_context(node->data);
+	//		context(node, node->closed);
+	//	};
+
+	//	node.data = &context.f().value();
+	//	node.pdone = &s.done;
+	//	return ptr->write(&node);
+	//}
+
+	void remove() {
+		ptr->remove_writer(&node);
+	}
+
+	explicit await_channel_writer(PtrType p) :ptr{ p } {}
+
+	~await_channel_writer() {
+		ptr->remove_writer(&node);
+	}
+
+};
+
+
+
+#endif // _MSC_VER

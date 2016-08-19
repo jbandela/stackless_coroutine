@@ -823,3 +823,62 @@ TEST_CASE("simple channel select [stackless]") {
 
 	REQUIRE(total == (max*max + max) / 2);
 }
+#ifdef _MSC_VER
+template<class Func>
+goroutine await_reader(std::shared_ptr<channel<int>> reader_chan, int& ptotal,Func f) {
+	await_channel_reader<int> reader{ reader_chan };
+	while (true) {
+		auto p = await reader.read();
+		if (p.first == false) {
+			f();
+			return;
+		}
+		ptotal += p.second;
+	}
+
+}
+template<class Func>
+goroutine await_writer(std::shared_ptr<channel<int>> writer_chan, int max,Func f) {
+	await_channel_writer<int> writer{ writer_chan };
+	for(int i = 0; i <= max; ++i){
+		await writer.write(i);
+	}
+	writer_chan->close();
+	f();
+
+}
+
+
+
+TEST_CASE("simple await channel [stackless]") {
+
+	auto chan = std::make_shared<channel<int>>();
+
+	static constexpr int max = 10000;
+	int total = 0;
+
+	std::mutex m;
+	std::condition_variable cvar;
+	std::atomic<int> finished{ 0 };
+	await_reader(chan,total, [&](auto&&...) {++finished;cvar.notify_one();});
+	await_writer(chan,max, [&](auto&&...) {++finished;cvar.notify_one();});
+
+	std::unique_lock<std::mutex> lock{ m };
+	while (finished.load() < 2) {
+		cvar.wait(lock);
+	}
+
+
+
+
+
+
+
+
+
+
+
+
+	REQUIRE(total == (max*max + max) / 2);
+}
+#endif 
