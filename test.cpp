@@ -828,7 +828,7 @@ template<class Func>
 goroutine await_reader(std::shared_ptr<channel<int>> reader_chan, int& ptotal,Func f) {
 	await_channel_reader<int> reader{ reader_chan };
 	while (true) {
-		auto p = await reader.read();
+		auto p = co_await reader.read();
 		if (p.first == false) {
 			f();
 			return;
@@ -841,7 +841,7 @@ template<class Func>
 goroutine await_writer(std::shared_ptr<channel<int>> writer_chan, int max,Func f) {
 	await_channel_writer<int> writer{ writer_chan };
 	for(int i = 0; i <= max; ++i){
-		await writer.write(i);
+		co_await writer.write(i);
 	}
 	writer_chan->close();
 	f();
