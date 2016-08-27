@@ -863,4 +863,87 @@ TEST_CASE("simple await channel [stackless]") {
 
 	REQUIRE(total == (max*max + max) / 2);
 }
+
+
+
+template<class Func>
+goroutine await_select_reader(std::shared_ptr<channel<int>> reader_chan1, std::shared_ptr<channel<int>> reader_chan2,int& ptotal, Func f) {
+	await_channel_reader<int> reader1{ reader_chan1 };
+	await_channel_reader<int> reader2{ reader_chan2 };
+	while (true) {
+		bool closed1 = false;
+		auto lambda = [&](bool closed, auto& v) {
+			if (closed) {
+				closed1 = true;
+			}
+			else {
+				ptotal += v;
+			}
+
+		};
+
+
+		channel_selector s;
+		co_await read_select(s,reader1, lambda,
+			reader2, lambda);
+			
+		if (closed1 == true) {
+			f();
+			return;
+		}
+	}
+
+}
+template<class Func>
+goroutine await_select_writer(std::shared_ptr<channel<int>> writer_chan1, std::shared_ptr<channel<int>> writer_chan2, int max, Func f) {
+	await_channel_writer<int> writer1{ writer_chan1 };
+	await_channel_writer<int> writer2{ writer_chan2 };
+	for (int i = 0; i <= max; ++i) {
+		if (i % 2) {
+			co_await writer1.write(i);
+		}
+		else {
+
+			co_await writer2.write(i);
+		}
+	}
+	writer_chan1->close();
+	writer_chan2->close();
+	f();
+
+}
+
+TEST_CASE("simple await select channel [stackless]") {
+
+	auto chan1 = std::make_shared<channel<int>>();
+	auto chan2 = std::make_shared<channel<int>>();
+
+	static constexpr int max = 10000;
+	int total = 0;
+
+	std::mutex m;
+	std::condition_variable cvar;
+	std::atomic<int> finished{ 0 };
+	await_select_reader(chan1,chan2, total, [&](auto&&...) {++finished;cvar.notify_one();});
+	await_select_writer(chan1,chan2, max, [&](auto&&...) {++finished;cvar.notify_one();});
+
+	std::unique_lock<std::mutex> lock{ m };
+	while (finished.load() < 2) {
+		cvar.wait(lock);
+	}
+
+
+
+
+
+
+
+
+
+
+
+
+	REQUIRE(total == (max*max + max) / 2);
+}
+
 #endif 

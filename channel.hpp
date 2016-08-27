@@ -577,6 +577,7 @@ struct channel_selector {
 
 #ifdef _MSC_VER
 #include <experimental/coroutine>
+#include <tuple>
 struct goroutine{
 struct promise_type
 {
@@ -635,14 +636,17 @@ template <class T, class PtrType = std::shared_ptr<channel<T>>> struct await_cha
 		return awaiter{ this };
 
 	}
-	template<class Select, class Context>
-	void read(Select& s, std::experimental::coroutine_handle<> rh) {
+	template<class Select, class Awaiter>
+	void read(Select& s, std::experimental::coroutine_handle<> rh, Awaiter& a) {
+		a.prh = rh.to_address();
 		node.func = [](void* n) {
 			auto node = static_cast<node_t*>(n);
-			auto rh = std::experimental::coroutine_handle<>::from_address(node->data);
+			auto pa = static_cast<Awaiter*>(node->data);
+			auto rh = std::experimental::coroutine_handle<>::from_address(pa->prh);
+			pa->selected_node = node;
 			rh();
 		};
-		node.data = rh.to_address();;
+		node.data = &a;
 
 
 		node.pdone = &s.done;
@@ -663,6 +667,104 @@ template <class T, class PtrType = std::shared_ptr<channel<T>>> struct await_cha
 
 };
 
+namespace detail {
+	// Apply adapted from http://isocpp.org/files/papers/N3915.pdf
+		template <typename F, typename Tuple, size_t... I>
+		decltype(auto) apply_impl(F&& f, Tuple&& t, std::integer_sequence<size_t, I...>) {
+			using namespace std;
+			return std::forward<F>(f)(get<I>(std::forward<Tuple>(t))...);
+		}
+		template <typename F, typename Tuple>
+		decltype(auto) apply(F&& f, Tuple&& t) {
+			using namespace std;
+			using Indices = make_index_sequence<tuple_size<decay_t<Tuple>>::value>;
+			return apply_impl(std::forward<F>(f), std::forward<Tuple>(t), Indices{});
+		}
+
+
+
+	template<class T>
+	T get_await_select_type(T t) {
+		return t;
+	}
+
+	template<class T, class Ptr>
+	await_channel_reader<T, Ptr>* get_await_select_type(await_channel_reader<T, Ptr>& t) {
+		return &t;
+	}
+
+	
+
+	template<class... T>
+	auto get_fd_tuple(T&&... t) {
+		return std::make_tuple(get_await_select_type(t)...);
+	}
+
+
+		template<class This,class Reader, class Func>
+		void do_read(This* pthis,std::experimental::coroutine_handle<>& rh,Reader r, Func& f) {
+			r->read(*pthis->s, rh,*pthis);
+		}
+
+
+		template<class This,class Reader, class Func, class R1, class F1,class... T>
+		void do_read(This* pthis,std::experimental::coroutine_handle<>& rh,Reader r, Func& f, R1 r1, F1& f1, T&&... t) {
+			r->read(*pthis->s, rh,*pthis);
+			do_read(pthis,rh, r1, f1, std::forward<T>(t)...);
+		}
+		template<class This,class Reader, class Func>
+		void do_wake(This* pthis,Reader r, Func& f) {
+			r->remove();
+			if (r->get_node() == pthis->selected_node) {
+				f(r->get_node()->closed, r->get_node()->value);
+			}
+		}
+
+
+		template<class This,class Reader, class Func, class R1, class F1,class... T>
+		void do_wake(This* pthis,Reader r, Func& f, R1 r1, F1& f1, T&&... t) {
+			r->remove();
+			if (r->get_node() == pthis->selected_node) {
+				f(r->get_node()->closed, r->get_node()->value);
+			}
+			do_wake(pthis,r1, f1, std::forward<T>(t)...);
+		}
+
+
+
+}
+
+template<class... T>
+auto read_select(channel_selector& s, T&&... t){
+	auto tup = detail::get_fd_tuple(std::forward<T>(t)...);
+	using Tuple = std::decay_t<decltype(tup)>;
+	struct awaiter {
+		Tuple t;
+		channel_selector* s = nullptr;
+		void* prh = nullptr;
+		detail::node_base* selected_node = nullptr;
+
+		awaiter(Tuple t, channel_selector* s) :t{ std::move(t) }, s{ s } {}
+
+		bool await_ready() {
+			return false;
+		}
+		void await_suspend(std::experimental::coroutine_handle<> rh) {
+			
+			detail::apply([this,&rh](auto&&... ts) {
+				detail::do_read(this,rh, std::forward<decltype(ts)>(ts)...);
+			},t);
+		}
+		auto await_resume() {
+			detail::apply([this](auto&&... ts) {
+				detail::do_wake(this,std::forward<decltype(ts)>(ts)...);
+			},t);
+		}
+	};
+
+
+	return awaiter{std::move(tup),&s};
+}
 
 template <class T, class PtrType = std::shared_ptr<channel<T>>> struct await_channel_writer {
 
