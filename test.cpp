@@ -883,8 +883,7 @@ goroutine await_select_reader(std::shared_ptr<channel<int>> reader_chan1, std::s
 		};
 
 
-		channel_selector s;
-		co_await read_select(s,reader1, lambda,
+		co_await read_select(reader1, lambda,
 			reader2, lambda);
 			
 		if (closed1 == true) {

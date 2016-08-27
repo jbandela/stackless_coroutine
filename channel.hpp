@@ -703,13 +703,13 @@ namespace detail {
 
 		template<class This,class Reader, class Func>
 		void do_read(This* pthis,std::experimental::coroutine_handle<>& rh,Reader r, Func& f) {
-			r->read(*pthis->s, rh,*pthis);
+			r->read(pthis->s, rh,*pthis);
 		}
 
 
 		template<class This,class Reader, class Func, class R1, class F1,class... T>
 		void do_read(This* pthis,std::experimental::coroutine_handle<>& rh,Reader r, Func& f, R1 r1, F1& f1, T&&... t) {
-			r->read(*pthis->s, rh,*pthis);
+			r->read(pthis->s, rh,*pthis);
 			do_read(pthis,rh, r1, f1, std::forward<T>(t)...);
 		}
 		template<class This,class Reader, class Func>
@@ -735,16 +735,17 @@ namespace detail {
 }
 
 template<class... T>
-auto read_select(channel_selector& s, T&&... t){
+auto read_select(T&&... t){
 	auto tup = detail::get_fd_tuple(std::forward<T>(t)...);
 	using Tuple = std::decay_t<decltype(tup)>;
 	struct awaiter {
 		Tuple t;
-		channel_selector* s = nullptr;
+		channel_selector s;
 		void* prh = nullptr;
 		detail::node_base* selected_node = nullptr;
 
-		awaiter(Tuple t, channel_selector* s) :t{ std::move(t) }, s{ s } {}
+		awaiter(Tuple t) :t{ std::move(t) }{}
+		awaiter(awaiter&& other) :t{ std::move(other.t) }, prh{ other.prh }, selected_node{ other.selected_node } {}
 
 		bool await_ready() {
 			return false;
@@ -763,7 +764,7 @@ auto read_select(channel_selector& s, T&&... t){
 	};
 
 
-	return awaiter{std::move(tup),&s};
+	return awaiter{std::move(tup)};
 }
 
 template <class T, class PtrType = std::shared_ptr<channel<T>>> struct await_channel_writer {
