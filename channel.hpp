@@ -245,8 +245,14 @@ template <class T> struct channel {
 
 
 
-  bool write(node_t *writer) {
-	  if (closed) return false;
+  void write(node_t *writer) {
+	  if (closed) {
+		  if (set_success(writer->pdone)) {
+			  writer->closed = true;
+			  executor->add(writer);
+		  }
+	  }
+
 	  lock_t lock{ mut };
 	  auto reader = static_cast<node_t*>(detail::remove_helper(read_head, read_tail, read_head.load()));
 	  while (reader && !set_intermediate(reader->pdone)) {
@@ -259,7 +265,7 @@ template <class T> struct channel {
 		  if (!set_success(writer->pdone)) {
 			  detail::add_head(read_head, read_tail, reader);
 			  clear_intermediate_failure(reader->pdone);
-			  return true;
+			  return ;
 		  }
 		  clear_intermediate_success(reader->pdone);
 		  lock.unlock();
@@ -273,10 +279,14 @@ template <class T> struct channel {
 		  executor->add(reader);
 		  executor->add(writer);
 	  }
-	  return true;
   }
-  bool read(node_t *reader) {
-	  if (closed) return false;
+  void read(node_t *reader) {
+	  if (closed) {
+		  if (set_success(reader->pdone)) {
+			  reader->closed = true;
+			  executor->add(reader);
+		  }
+	  }
 	  lock_t lock{ mut };
 	  auto writer = static_cast<node_t*>(detail::remove_helper(write_head, write_tail, write_head.load()));
 	  while (writer && !set_intermediate(writer->pdone)) {
@@ -289,12 +299,12 @@ template <class T> struct channel {
 		  if (!set_success(reader->pdone)) {
 			  detail::add_head(write_head, write_tail, writer);
 			  clear_intermediate_failure(writer->pdone);
-			  return true;
+			  return ;
 		  }
 		  clear_intermediate_success(writer->pdone);
 		  lock.unlock();
 		  assert(writer->func);
-		  T value{ std::move(writer->value) };
+		  reader->value = std::move(writer->value);
 
 		  writer->closed = false;
 		  reader->closed = false;
@@ -303,7 +313,6 @@ template <class T> struct channel {
 
 		  executor->add(reader);
 	  }
-	  return true;
   }
 
   void remove_reader(node_t* reader) {
@@ -379,7 +388,7 @@ template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_re
 		return &node;
 	}
 	template<class Context>
-	bool read(Context context) {
+	void read(Context context) {
 
 		node.func = [](void* n) {
 
@@ -388,10 +397,10 @@ template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_re
 			context(node, node->value,node->closed);
 		};
 		node.data = &context.f().value();
-		return ptr->read(&node);
+		ptr->read(&node);
 	}
 	template<class Select,class Context>
-	bool read(Select& s,Context context) {
+	void read(Select& s,Context context) {
 
 		node.func = [](void* n) {
 
@@ -401,7 +410,7 @@ template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_re
 		};
 		node.data = &context.f().value();
 		node.pdone = &s.done;
-		return ptr->read(&node);
+		ptr->read(&node);
 	}
 	void remove() {
 		ptr->remove_reader(&node);
@@ -428,7 +437,7 @@ template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_wr
 		return &node;
 	}
 	template<class Context>
-	bool write(T t, Context context) {
+	void write(T t, Context context) {
 		node.value = std::move(t);
 
 	node.func = [](void* n) {
@@ -438,10 +447,10 @@ template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_wr
 		};
 	
 		node.data = &context.f().value();
-		return ptr->write(&node);
+		ptr->write(&node);
 	}
 	template<class Select,class Context>
-	bool write(T t,Select& s, Context context) {
+	void write(T t,Select& s, Context context) {
 		node.value = std::move(t);
 
 	node.func = [](void* n) {
@@ -452,7 +461,7 @@ template <class T,class PtrType = std::shared_ptr<channel<T>>> struct channel_wr
 	
 		node.data = &context.f().value();
 		node.pdone = &s.done;
-		return ptr->write(&node);
+		ptr->write(&node);
 	}
 
 	void remove() {
@@ -611,36 +620,34 @@ template <class T, class PtrType = std::shared_ptr<channel<T>>> struct await_cha
 					rh();
 				};
 				node.data = rh.to_address();;
-				if (!pthis->ptr->read(&pthis->node)) {
-					pthis = nullptr;
-					rh();
-				}
+				pthis->ptr->read(&pthis->node);
+
 			}
 			auto await_resume() {
 				if (pthis) {
-					return std::make_pair(!pthis->node.closed, pthis->node.value);
+					return std::make_pair(!pthis->node.closed, std::move(pthis->node.value));
 				}
 				else {
-					return std::make_pair(false, pthis->node.value);
+					return std::make_pair(false, std::move(pthis->node.value));
 				}
 			}
 		};
 		return awaiter{ this };
 
 	}
-	//template<class Select, class Context>
-	//bool read(Select& s, Context context) {
+	template<class Select, class Context>
+	void read(Select& s, std::experimental::coroutine_handle<> rh) {
+		node.func = [](void* n) {
+			auto node = static_cast<node_t*>(n);
+			auto rh = std::experimental::coroutine_handle<>::from_address(node->data);
+			rh();
+		};
+		node.data = rh.to_address();;
 
-	//	node.func = [](void* n) {
 
-	//		auto node = static_cast<node_t*>(n);
-	//		auto context = Context::get_context(node->data);
-	//		context(node, detail::void_holder{ &node->value }, node->closed);
-	//	};
-	//	node.data = &context.f().value();
-	//	node.pdone = &s.done;
-	//	return ptr->read(&node);
-	//}
+		node.pdone = &s.done;
+		ptr->read(&node);
+	}
 	void remove() {
 		ptr->remove_reader(&node);
 	}
@@ -682,10 +689,7 @@ template <class T, class PtrType = std::shared_ptr<channel<T>>> struct await_cha
 					rh();
 				};
 				pthis->node.data = rh.to_address();;
-				if (!pthis->ptr->write(&pthis->node)) {
-					pthis = nullptr;
-					rh();
-				}
+				pthis->ptr->write(&pthis->node);
 			}
 			auto await_resume() {
 				if (pthis) {

@@ -620,12 +620,8 @@ TEST_CASE("simple channel [stackless]") {
 	auto reader_block = stackless_coroutine::make_block(
 		stackless_coroutine::make_while_true(
 			[](auto& context, reader_variables& variables) {
-		if (variables.rchan.read(context)) {
-			return context.do_async();
-				}
-		else {
-			return context.do_async_break();
-		}
+		variables.rchan.read(context);
+		return context.do_async();
 
 			},
 			[](auto& context, reader_variables& variables,auto channel, int& value, bool closed) {
@@ -716,23 +712,9 @@ TEST_CASE("simple channel select [stackless]") {
 	auto reader_block = stackless_coroutine::make_block(
 		stackless_coroutine::make_while_true(
 			[](auto& context, reader_variables& variables) {
-		bool closed;
-		if (variables.rchan1.read(variables.s,context)) {
-			closed = false;
-		}
-		else {
-			closed = true;
-		}
-		if (variables.rchan2.read(variables.s,context)) {
-			closed = false;
-		}
-
-		if(closed) {
-			return context.do_async_break();
-		}
-		else {
-			return context.do_async();
-		}
+		variables.rchan1.read(variables.s, context);
+		variables.rchan2.read(variables.s, context);
+		return context.do_async();
 
 	},
 			[](auto& context, reader_variables& variables, auto channel, auto value, bool closed) {
