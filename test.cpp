@@ -937,5 +937,58 @@ TEST_CASE("simple await select channel [stackless]") {
 
 	REQUIRE(total == (max*max + max) / 2);
 }
+template<class Func>
+goroutine await_select_range_reader(std::shared_ptr<channel<int>> reader_chan1, std::shared_ptr<channel<int>> reader_chan2,int& ptotal, Func f) {
+	std::vector<await_channel_reader<int>> vec;
+	vec.emplace_back(reader_chan1);
+	vec.emplace_back(reader_chan2);
+	while (true) {
+		auto lambda = [&](auto& v) {
+			ptotal += v;
+		};
+
+
+		auto res = co_await read_select_range(vec, lambda);
+			
+		if (res.first == false) {
+			f();
+			return;
+		}
+	}
+
+}
+TEST_CASE("simple await select range channel [stackless]") {
+
+	auto chan1 = std::make_shared<channel<int>>();
+	auto chan2 = std::make_shared<channel<int>>();
+
+	static constexpr int max = 10000;
+	int total = 0;
+
+	std::mutex m;
+	std::condition_variable cvar;
+	std::atomic<int> finished{ 0 };
+	await_select_range_reader(chan1,chan2, total, [&](auto&&...) {++finished;cvar.notify_one();});
+	await_select_writer(chan1,chan2, max, [&](auto&&...) {++finished;cvar.notify_one();});
+
+	std::unique_lock<std::mutex> lock{ m };
+	while (finished.load() < 2) {
+		cvar.wait(lock);
+	}
+
+
+
+
+
+
+
+
+
+
+
+
+	REQUIRE(total == (max*max + max) / 2);
+}
+
 
 #endif 

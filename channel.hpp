@@ -772,6 +772,46 @@ auto read_select(T&&... t){
 	return awaiter{std::move(tup)};
 }
 
+template<class Range, class Func>
+auto read_select_range(Range& r,Func f) {
+	struct awaiter {
+		Range* rng;
+		Func f;
+		channel_selector s;
+		void* prh = nullptr;
+		detail::node_base* selected_node = nullptr;
+		std::mutex mut;
+
+		awaiter(Range&  rng, Func f) :rng{ &rng }, f{ f } {}
+		awaiter(awaiter&& other) :rng{ rng }, f{ std::move(other.f) }, prh { other.prh }, selected_node{ other.selected_node } {}
+
+		bool await_ready() {
+			return false;
+		}
+		void await_suspend(std::experimental::coroutine_handle<> rh) {
+			std::unique_lock<std::mutex> lock{ mut };
+			for (auto& r : *rng) {
+				detail::do_read(this, rh, &r, f);
+			}
+		}
+		auto await_resume() {
+			using std::begin;
+			using std::end;
+			auto iter = begin(*rng);
+			for (;iter != end(*rng);++iter) {
+				detail::do_wake(this, &*iter, f);
+			}
+			assert(iter != end(*rng));
+
+			return std::make_pair(!selected_node->closed, iter);
+		}
+	};
+
+
+	return awaiter{ r,std::move(f) };
+}
+
+
 template <class T, class PtrType = std::shared_ptr<channel<T>>> struct await_channel_writer {
 
 	using node_t = typename channel<T>::node_t;
