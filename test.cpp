@@ -871,22 +871,15 @@ goroutine await_select_reader(std::shared_ptr<channel<int>> reader_chan1, std::s
 	await_channel_reader<int> reader1{ reader_chan1 };
 	await_channel_reader<int> reader2{ reader_chan2 };
 	while (true) {
-		bool closed1 = false;
-		auto lambda = [&](bool closed, auto& v) {
-			if (closed) {
-				closed1 = true;
-			}
-			else {
-				ptotal += v;
-			}
-
+		auto lambda = [&](auto& v) {
+			ptotal += v;
 		};
 
 
-		co_await read_select(reader1, lambda,
+		auto res = co_await read_select(reader1, lambda,
 			reader2, lambda);
 			
-		if (closed1 == true) {
+		if (res.first == false) {
 			f();
 			return;
 		}

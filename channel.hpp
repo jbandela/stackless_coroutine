@@ -642,6 +642,8 @@ template <class T, class PtrType = std::shared_ptr<channel<T>>> struct await_cha
 		node.func = [](void* n) {
 			auto node = static_cast<node_t*>(n);
 			auto pa = static_cast<Awaiter*>(node->data);
+			std::unique_lock<std::mutex> lock{pa->mut };
+			lock.unlock();
 			auto rh = std::experimental::coroutine_handle<>::from_address(pa->prh);
 			pa->selected_node = node;
 			rh();
@@ -715,8 +717,8 @@ namespace detail {
 		template<class This,class Reader, class Func>
 		void do_wake(This* pthis,Reader r, Func& f) {
 			r->remove();
-			if (r->get_node() == pthis->selected_node) {
-				f(r->get_node()->closed, r->get_node()->value);
+			if (r->get_node() == pthis->selected_node && pthis->selected_node->closed == false) {
+				f(r->get_node()->value);
 			}
 		}
 
@@ -724,8 +726,8 @@ namespace detail {
 		template<class This,class Reader, class Func, class R1, class F1,class... T>
 		void do_wake(This* pthis,Reader r, Func& f, R1 r1, F1& f1, T&&... t) {
 			r->remove();
-			if (r->get_node() == pthis->selected_node) {
-				f(r->get_node()->closed, r->get_node()->value);
+			if (r->get_node() == pthis->selected_node && pthis->selected_node->closed == false) {
+				f(r->get_node()->value);
 			}
 			do_wake(pthis,r1, f1, std::forward<T>(t)...);
 		}
@@ -743,6 +745,7 @@ auto read_select(T&&... t){
 		channel_selector s;
 		void* prh = nullptr;
 		detail::node_base* selected_node = nullptr;
+		std::mutex mut;
 
 		awaiter(Tuple t) :t{ std::move(t) }{}
 		awaiter(awaiter&& other) :t{ std::move(other.t) }, prh{ other.prh }, selected_node{ other.selected_node } {}
@@ -751,6 +754,7 @@ auto read_select(T&&... t){
 			return false;
 		}
 		void await_suspend(std::experimental::coroutine_handle<> rh) {
+			std::unique_lock<std::mutex> lock{ mut };
 			
 			detail::apply([this,&rh](auto&&... ts) {
 				detail::do_read(this,rh, std::forward<decltype(ts)>(ts)...);
@@ -760,6 +764,7 @@ auto read_select(T&&... t){
 			detail::apply([this](auto&&... ts) {
 				detail::do_wake(this,std::forward<decltype(ts)>(ts)...);
 			},t);
+			return std::make_pair(!selected_node->closed, selected_node);
 		}
 	};
 
