@@ -774,6 +774,8 @@ auto read_select(T&&... t){
 
 template<class Range, class Func>
 auto read_select_range(Range& r,Func f) {
+	using std::begin;
+	using Iter = decltype(begin(r));
 	struct awaiter {
 		Range* rng;
 		Func f;
@@ -798,12 +800,19 @@ auto read_select_range(Range& r,Func f) {
 			using std::begin;
 			using std::end;
 			auto iter = begin(*rng);
+			auto selected_iter = end(*rng);
 			for (;iter != end(*rng);++iter) {
-				detail::do_wake(this, &*iter, f);
+				iter->remove();
+				if (iter->get_node() == selected_node){
+					selected_iter = iter;
+					if (selected_node->closed == false) {
+						f(iter->get_node()->value);
+					}
+				}
 			}
-			assert(iter != end(*rng));
+			assert(selected_iter != end(*rng));
 
-			return std::make_pair(!selected_node->closed, iter);
+			return std::make_pair(!selected_node->closed, selected_iter);
 		}
 	};
 

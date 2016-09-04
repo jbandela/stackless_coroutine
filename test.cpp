@@ -789,7 +789,7 @@ TEST_CASE("simple channel select [stackless]") {
 
 	std::unique_lock<std::mutex> lock{ m };
 	while (finished.load() < 2) {
-		cvar.wait(lock);
+		cvar.wait_for(lock, std::chrono::seconds{ 1 });
 	}
 
 
@@ -847,7 +847,7 @@ TEST_CASE("simple await channel [stackless]") {
 
 	std::unique_lock<std::mutex> lock{ m };
 	while (finished.load() < 2) {
-		cvar.wait(lock);
+		cvar.wait_for(lock, std::chrono::seconds{ 1 });
 	}
 
 
