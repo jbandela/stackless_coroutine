@@ -485,11 +485,12 @@ struct channel_selector {
 		detail::node_base* channel = nullptr;
 		detail::void_holder value;
 		bool success = false;
-		select_helper_reader(channel_selector* s, detail::node_base* channel, detail::void_holder value) :sel{ s }, channel{ channel }, value{ value } {}
+		bool closed;
+		select_helper_reader(channel_selector* s, detail::node_base* channel, detail::void_holder value, bool closed) :sel{ s }, channel{ channel }, value{ value }, closed{ closed } {}
 		template<class ChannelReader, class F>
 		select_helper_reader& select(ChannelReader& c, F&& f) {
 			c.remove();
-			if (channel == c.get_node()) {
+			if (channel == c.get_node() && !closed) {
 				using value_type = typename ChannelReader::value_type;
 				success = true;
 				f(*static_cast<value_type*>(value.value));
@@ -503,7 +504,7 @@ struct channel_selector {
 		select_helper_reader& select_range(Range& r, F&& f) {
 			for (auto& c : r) {
 				c.remove();
-				if (channel == c.get_node()) {
+				if (channel == c.get_node() && !closed) {
 					using ChannelReader = std::decay_t<decltype(c)>;
 					using value_type = typename ChannelReader::value_type;
 					success = true;
@@ -528,11 +529,12 @@ struct channel_selector {
 		channel_selector* sel = nullptr;
 		detail::node_base* channel = nullptr;
 		bool success = false;
-		select_helper_writer(channel_selector* s, detail::node_base* channel) :sel{ s }, channel{ channel }{}
+		bool closed;
+		select_helper_writer(channel_selector* s, detail::node_base* channel, bool closed) :sel{ s }, channel{ channel }, closed{ closed } {}
 		template<class ChannelReader, class F>
 		select_helper_writer& select(ChannelReader& c, F&& f) {
 			c.remove();
-			if (channel == c.get_node()) {
+			if (channel == c.get_node() && !closed) {
 				success = true;
 				f();
 			}
@@ -544,7 +546,7 @@ struct channel_selector {
 		select_helper_writer& select_range(Range& r, F&& f) {
 			for (auto& c : r) {
 				c.remove();
-				if (channel == c.get_node()) {
+				if (channel == c.get_node() && !closed) {
 					success = true;
 					f();
 				}
@@ -562,11 +564,11 @@ struct channel_selector {
 
 	};
 
-	auto get_selector(detail::node_base* channel) {
-		return select_helper_writer{this, channel };
+	auto get_selector(detail::node_base* channel,bool closed) {
+		return select_helper_writer{this, channel,closed };
 	}
-	auto get_selector(detail::node_base* channel, detail::void_holder value) {
-		return select_helper_reader{this, channel,value };
+	auto get_selector(detail::node_base* channel, detail::void_holder value, bool closed) {
+		return select_helper_reader{this, channel,value,closed };
 	}
 
 
