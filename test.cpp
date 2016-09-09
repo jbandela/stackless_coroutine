@@ -717,11 +717,8 @@ TEST_CASE("simple channel select [stackless]") {
 		return context.do_async();
 
 	},
-			[](auto& context, reader_variables& variables, auto channel, auto value, bool closed) {
-		if (closed) {
-			return context.do_break();
-		}
-		auto sel = variables.s.get_selector(channel, value);
+	[](auto& context, reader_variables& variables, auto channel, auto value, bool closed) {
+		auto sel = variables.s.get_selector(channel, value,closed);
 		sel.select(variables.rchan1, [&](auto& v) {
 
 		(*variables.result) += v;
@@ -730,6 +727,9 @@ TEST_CASE("simple channel select [stackless]") {
 
 		(*variables.result) += v;
 		});
+		if (closed) {
+			return context.do_break();
+		}
 	
 		return context.do_continue();
 	}
