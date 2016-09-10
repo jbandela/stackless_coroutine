@@ -185,6 +185,37 @@ namespace detail {
 	};
 }
 
+namespace detail {
+
+	template<class T>
+	struct fixed_queue {
+		fixed_queue(int capacity) :vec(capacity) {}
+		bool empty()const { return vec.empty() || count == 0; }
+		bool full()const {return vec.empty() || count == vec.size(); }
+		T pop() {
+			T ret = std::move(vec[read]);
+			read = (read + 1) % vec.size();
+			--count;
+			return ret;
+		}
+		void push(T t) {
+			vec[write] = std::move(t);
+			write = (write + 1) % vec.size();
+			++count;
+		}
+	private:
+		std::vector<T> vec;
+		int read = 0;
+		int write = 0;
+		int count = 0;
+
+
+
+	};
+
+}
+
+
 channel_executor& get_channel_executor() {
 	static channel_executor e;
 	static detail::channel_runner cr{ &e };
@@ -206,6 +237,8 @@ template <class T> struct channel {
   using lock_t = std::unique_lock<std::mutex>;
 
   channel_executor* executor = nullptr;
+
+  detail::fixed_queue<T> queue;
 
 	// 0 = not done, 1 = done, -1 = indeterminate
 	static bool set_done(std::atomic<int>* pdone, int expected, int value) {
@@ -254,11 +287,21 @@ template <class T> struct channel {
 	  }
 
 	  lock_t lock{ mut };
+
 	  auto reader = static_cast<node_t*>(detail::remove_helper(read_head, read_tail, read_head.load()));
 	  while (reader && !set_intermediate(reader->pdone)) {
 		  reader = static_cast<node_t*>(detail::remove_helper(read_head, read_tail, read_head.load()));
 	  }
 	  if (!reader) {
+		  if (!queue.full()) {
+			  if (set_success(writer->pdone)) {
+				  queue.push(std::move(writer->value));
+				  lock.unlock();
+				  writer->closed = false;
+				  executor->add(writer);
+				  return;
+			  }
+		  }
 		  detail::add(write_head, write_tail, writer);
 	  }
 	  else {
@@ -281,13 +324,27 @@ template <class T> struct channel {
 	  }
   }
   void read(node_t *reader) {
+	  lock_t lock{ mut };
+	  if (!queue.empty()) {
+		  if (set_success(reader->pdone)) {
+			  reader->value = std::move(queue.pop());
+			  lock.unlock();
+			  reader->closed = false;
+			  executor->add(reader);
+			  return;
+		  }
+		  return;
+	  }
 	  if (closed) {
+		  lock.unlock();
 		  if (set_success(reader->pdone)) {
 			  reader->closed = true;
 			  executor->add(reader);
 		  }
+		  return;
 	  }
-	  lock_t lock{ mut };
+	
+
 	  auto writer = static_cast<node_t*>(detail::remove_helper(write_head, write_tail, write_head.load()));
 	  while (writer && !set_intermediate(writer->pdone)) {
 		  writer = static_cast<node_t*>(detail::remove_helper(write_head, write_tail, write_head.load()));
@@ -365,9 +422,22 @@ template <class T> struct channel {
 
   }
 
-  channel(channel_executor* e = &get_channel_executor()) :executor{ e } {}
+  channel(int buffer = 0,channel_executor* e = &get_channel_executor()) :executor{ e }, queue{ buffer } {}
+
+  bool push(T t) {
+	  
+	  lock_t lock{ mut };
+	  if (!queue.full()) {
+		  queue.push(std::move(t));
+		  return true;
+	  }
+	  else {
+		  return false;
+	  }
+  }
 
 
+  
 };
 
 namespace detail {
