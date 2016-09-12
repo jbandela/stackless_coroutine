@@ -5,65 +5,71 @@
 #include <boost/thread/executor.hpp>
 #include <boost/thread/executors/loop_executor.hpp>
 #include <boost/thread/future.hpp>
+#ifdef _MSC_VER
 #include <experimental/coroutine>
-#include <iostream>
-#include <chrono>
+#endif
 #include <atomic>
+#include <chrono>
+#include <iostream>
 #include <thread>
 
-
 auto test_future(int count) {
-	boost::executors::loop_executor loop;
+  boost::executors::loop_executor loop;
 
-	for (int i = 0; i < count; ++i) {
-		boost::promise<int> p;
-		auto fut = p.get_future();
-		fut.then(loop, [&](auto&&) {});
-		p.set_value(i);
-		loop.run_queued_closures();
-	}
+  for (int i = 0; i < count; ++i) {
+    boost::promise<int> p;
+    auto fut = p.get_future();
+    bool done = false;
+    fut.then(loop, [&](auto &&) { done = true; });
+    p.set_value(i);
+    while (!done) {
+      loop.run_queued_closures();
+    }
+  }
 }
 auto test_callback(int count) {
-	boost::executors::loop_executor loop;
+  boost::executors::loop_executor loop;
 
-	for (int i = 0; i < count; ++i) {
-		loop.submit([]() {});
-		loop.run_queued_closures();
-	}
+  for (int i = 0; i < count; ++i) {
+    loop.submit([]() {});
+    loop.run_queued_closures();
+  }
 }
 
-
-#include "stackless_coroutine.hpp"
 #include "channel.hpp"
+#include "stackless_coroutine.hpp"
 
+#ifdef _MSC_VER
 goroutine writer(std::shared_ptr<channel<int>> chan, int count) {
-	await_channel_writer<int> writer{ chan };
-	for (int i = 0; i < count; ++i) {
-		co_await writer.write(i);
-	}
-	chan->close();
-
+  await_channel_writer<int> writer{chan};
+  for (int i = 0; i < count; ++i) {
+    co_await writer.write(i);
+  }
+  chan->close();
 }
-goroutine reader(std::shared_ptr<channel<int>> chan,std::atomic<int>& f) {
-	await_channel_reader<int> reader{ chan };
-	for (;;) {
-		auto p = co_await reader.read();
-		if (p.first == false) break;
-	}
-	f = 1;
+goroutine reader(std::shared_ptr<channel<int>> chan, std::atomic<int> &f) {
+  await_channel_reader<int> reader{chan};
+  for (;;) {
+    auto p = co_await reader.read();
+    if (p.first == false)
+      break;
+  }
+  f = 1;
 }
 
 auto test_channel(int count) {
-	std::atomic<int> f;
-	f = 0;
+  std::atomic<int> f;
+  f = 0;
 
-	auto chan = std::make_shared<channel<int>>();
+  auto chan = std::make_shared<channel<int>>();
 
-	writer(chan, count);
-	reader(chan, f);
-	while (f == 0);
-
+  writer(chan, count);
+  reader(chan, f);
+  while (f == 0)
+    ;
 }
+
+#endif
 
 auto make_reader(std::shared_ptr<channel<int>> chan, std::atomic<int> &f) {
   struct values {
@@ -110,7 +116,7 @@ auto make_writer(std::shared_ptr<channel<int>> chan, int count) {
       stackless_coroutine::make_block(stackless_coroutine::make_while_true(
           [](auto &context, values &variables) {
             if (variables.i >= variables.count) {
-              variables.writer.ptr->close();
+              variables.writer.close();
               return context.do_async_return();
             }
             variables.writer.write(variables.i, context);
@@ -128,90 +134,94 @@ auto make_writer(std::shared_ptr<channel<int>> chan, int count) {
 }
 
 auto test_channel_stackless_library(int count) {
-	std::atomic<int> f;
-	f = 0;
+  std::atomic<int> f;
+  f = 0;
 
-	auto chan = std::make_shared<channel<int>>();
+  auto chan = std::make_shared<channel<int>>();
 
-	auto w = make_writer(chan, count);
-	auto r = make_reader(chan, f);
-	w();
-	r();
-	while (f == 0);
-
+  auto w = make_writer(chan, count);
+  auto r = make_reader(chan, f);
+  w();
+  r();
+  while (f == 0)
+    ;
 }
-goroutine writer_select(std::shared_ptr<channel<int>> chan1, std::shared_ptr<channel<int>> chan2, int count) {
-	await_channel_writer<int> writer1{ chan1 };
-	await_channel_writer<int> writer2{ chan2 };
-	for (int i = 0; i < count; ++i) {
-		if (i % 2) {
-			co_await writer1.write(i);
-		}
-		else {
 
-			co_await writer2.write(i);
-		}
-	}
-	chan1->close();
-	chan2->close();
+#ifdef _MSC_VER
+goroutine writer_select(std::shared_ptr<channel<int>> chan1,
+                        std::shared_ptr<channel<int>> chan2, int count) {
+  await_channel_writer<int> writer1{chan1};
+  await_channel_writer<int> writer2{chan2};
+  for (int i = 0; i < count; ++i) {
+    if (i % 2) {
+      co_await writer1.write(i);
+    } else {
 
+      co_await writer2.write(i);
+    }
+  }
+  chan1->close();
+  chan2->close();
 }
-goroutine reader_select(std::shared_ptr<channel<int>> chan1, std::shared_ptr<channel<int>> chan2, std::atomic<int>& f) {
-	await_channel_reader<int> reader1{ chan1 };
-	await_channel_reader<int> reader2{ chan2 };
-	for (;;) {
-		auto p = co_await read_select(reader1, [](auto) {}, reader2,[](auto) {});
-		if (p.first == false) break;
-	}
-	f = 1;
+goroutine reader_select(std::shared_ptr<channel<int>> chan1,
+                        std::shared_ptr<channel<int>> chan2,
+                        std::atomic<int> &f) {
+  await_channel_reader<int> reader1{chan1};
+  await_channel_reader<int> reader2{chan2};
+  for (;;) {
+    auto p = co_await read_select(reader1, [](auto) {}, reader2, [](auto) {});
+    if (p.first == false)
+      break;
+  }
+  f = 1;
 }
 
 auto test_channel_select(int count) {
-	std::atomic<int> f;
-	f = 0;
+  std::atomic<int> f;
+  f = 0;
 
-	auto chan1 = std::make_shared<channel<int>>();
-	auto chan2 = std::make_shared<channel<int>>();
+  auto chan1 = std::make_shared<channel<int>>();
+  auto chan2 = std::make_shared<channel<int>>();
 
-	writer_select(chan1,chan2, count);
-	reader_select(chan1,chan2, f);
-	while (f == 0);
-
+  writer_select(chan1, chan2, count);
+  reader_select(chan1, chan2, f);
+  while (f == 0)
+    ;
 }
+#endif
+
 auto test_future_select(int count) {
-	boost::executors::loop_executor loop;
-	boost::promise<int> p1;
-	boost::promise<int> p2;
-	auto fut1 = p1.get_future();
-	auto fut2 = p2.get_future();
+  boost::executors::loop_executor loop;
+  boost::promise<int> p1;
+  boost::promise<int> p2;
+  auto fut1 = p1.get_future();
+  auto fut2 = p2.get_future();
 
-
-	for (int i = 0; i < count; ++i) {
-		auto selected = boost::when_any(std::move(fut1), std::move(fut2));
-		bool done = false;
-		selected.then(loop, [&](auto&& f) {
-			auto p = f.get();
-			if (std::get<0>(p).is_ready()) {
-				p1 = boost::promise<int>{};
-				fut1 = p1.get_future();
-				fut2 = std::move(std::get<1>(p));
-			}
-			else {
-				p2 = boost::promise<int>{};
-				fut2 = p2.get_future();
-				fut1 = std::move(std::get<0>(p));
-			}
-			done = true;
-		});
-		if (i % 2) {
-			p1.set_value(i);
-		}
-		else {
-			p2.set_value(i);
-		}
-		while (!done) { loop.run_queued_closures(); }
-
-	}
+  for (int i = 0; i < count; ++i) {
+    auto selected = boost::when_any(std::move(fut1), std::move(fut2));
+    bool done = false;
+    selected.then(loop, [&](auto &&f) {
+      auto p = f.get();
+      if (std::get<0>(p).is_ready()) {
+        p1 = boost::promise<int>{};
+        fut1 = p1.get_future();
+        fut2 = std::move(std::get<1>(p));
+      } else {
+        p2 = boost::promise<int>{};
+        fut2 = p2.get_future();
+        fut1 = std::move(std::get<0>(p));
+      }
+      done = true;
+    });
+    if (i % 2) {
+      p1.set_value(i);
+    } else {
+      p2.set_value(i);
+    }
+    while (!done) {
+      loop.run_queued_closures();
+    }
+  }
 }
 
 auto make_reader_select(std::shared_ptr<channel<int>> chan1,
@@ -237,20 +247,19 @@ auto make_reader_select(std::shared_ptr<channel<int>> chan1,
             return context.do_async();
 
           },
-          [](auto &context, values &variables, auto channel, auto value,
-             bool closed) {
+          [](auto &context, values &variables, auto... v) {
 
             std::unique_lock<std::mutex> lock{variables.mut};
             lock.unlock();
-           auto sel = get_selector(channel, value);
+            auto sel = get_selector(v...);
             sel.select(variables.reader1, [](auto &&) {})
                 .select(variables.reader2, [](auto &&) {});
 
-            if (closed) {
+            if (!sel) {
               *variables.pf = 1;
               return context.do_break();
             }
- 
+
             return context.do_continue();
 
           }
@@ -278,8 +287,8 @@ auto make_writer_select(std::shared_ptr<channel<int>> chan1,
       stackless_coroutine::make_block(stackless_coroutine::make_while_true(
           [](auto &context, values &variables) {
             if (variables.i >= variables.count) {
-              variables.writer1.ptr->close();
-              variables.writer2.ptr->close();
+              variables.writer1.close();
+              variables.writer2.close();
               return context.do_async_return();
             }
             if (variables.i % 2) {
@@ -303,72 +312,102 @@ auto make_writer_select(std::shared_ptr<channel<int>> chan1,
 }
 
 auto test_channel_stackless_library_select(int count) {
-	std::atomic<int> f;
-	f = 0;
+  std::atomic<int> f;
+  f = 0;
 
-	auto chan = std::make_shared<channel<int>>();
+  auto chan = std::make_shared<channel<int>>();
 
-	auto w = make_writer(chan, count);
-	auto r = make_reader(chan, f);
-	w();
-	r();
-	while (f == 0);
-
+  auto w = make_writer(chan, count);
+  auto r = make_reader(chan, f);
+  w();
+  r();
+  while (f == 0)
+    ;
 }
-
 
 int main() {
 
-	auto count = 1'000'000;
-	{
-		auto start = std::chrono::steady_clock::now();
-		test_future(count);
-		auto end = std::chrono::steady_clock::now();
-		std::cout << "Did " << count << " iterations for future in " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << "\n";
-	}
-	{
-		auto start = std::chrono::steady_clock::now();
-		test_callback(count);
-		auto end = std::chrono::steady_clock::now();
-		std::cout << "Did " << count << " iterations for callback in " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << "\n";
-	}
+  auto count = 10'000;
+  {
+    auto start = std::chrono::steady_clock::now();
+    test_future(count);
+    auto end = std::chrono::steady_clock::now();
+    std::cout << "Did " << count << " iterations for future in "
+              << std::chrono::duration_cast<std::chrono::duration<double>>(
+                     end - start)
+                     .count()
+              << "\n";
+  }
+  {
+    auto start = std::chrono::steady_clock::now();
+    test_callback(count);
+    auto end = std::chrono::steady_clock::now();
+    std::cout << "Did " << count << " iterations for callback in "
+              << std::chrono::duration_cast<std::chrono::duration<double>>(
+                     end - start)
+                     .count()
+              << "\n";
+  }
 
+#ifdef _MSC_VER
+  {
 
-	{
+    auto start = std::chrono::steady_clock::now();
+    test_channel(count);
+    auto end = std::chrono::steady_clock::now();
+    std::cout << "Did " << count << " channel iterations in "
+              << std::chrono::duration_cast<std::chrono::duration<double>>(
+                     end - start)
+                     .count()
+              << "\n";
+  }
+#endif
+  {
 
-		auto start = std::chrono::steady_clock::now();
-		test_channel(count);
-		auto end = std::chrono::steady_clock::now();
-		std::cout << "Did " << count << " channel iterations in " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << "\n";
-	}
-	{
+    auto start = std::chrono::steady_clock::now();
+    test_channel_stackless_library(count);
+    auto end = std::chrono::steady_clock::now();
+    std::cout << "Did " << count << " channel stackless library iterations in "
+              << std::chrono::duration_cast<std::chrono::duration<double>>(
+                     end - start)
+                     .count()
+              << "\n";
+  }
 
-		auto start = std::chrono::steady_clock::now();
-		test_channel_stackless_library(count);
-		auto end = std::chrono::steady_clock::now();
-		std::cout << "Did " << count << " channel stackless library iterations in " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << "\n";
-	}
-	{
+#ifdef _MSC_VER
+  {
 
-		auto start = std::chrono::steady_clock::now();
-		test_channel_select(count);
-		auto end = std::chrono::steady_clock::now();
-		std::cout << "Did " << count << " channel_select iterations in " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << "\n";
-	}
-	{
+    auto start = std::chrono::steady_clock::now();
+    test_channel_select(count);
+    auto end = std::chrono::steady_clock::now();
+    std::cout << "Did " << count << " channel_select iterations in "
+              << std::chrono::duration_cast<std::chrono::duration<double>>(
+                     end - start)
+                     .count()
+              << "\n";
+  }
 
-		auto start = std::chrono::steady_clock::now();
-		test_future_select(count);
-		auto end = std::chrono::steady_clock::now();
-		std::cout << "Did " << count << " future_select iterations in " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << "\n";
-	}
-	{
+#endif
+  {
 
-		auto start = std::chrono::steady_clock::now();
-		test_channel_stackless_library_select(count);
-		auto end = std::chrono::steady_clock::now();
-		std::cout << "Did " << count << " channel stackless library iterations in " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << "\n";
-	}
+    auto start = std::chrono::steady_clock::now();
+    test_future_select(count);
+    auto end = std::chrono::steady_clock::now();
+    std::cout << "Did " << count << " future_select iterations in "
+              << std::chrono::duration_cast<std::chrono::duration<double>>(
+                     end - start)
+                     .count()
+              << "\n";
+  }
+  {
 
+    auto start = std::chrono::steady_clock::now();
+    test_channel_stackless_library_select(count);
+    auto end = std::chrono::steady_clock::now();
+    std::cout << "Did " << count << " channel stackless library iterations in "
+              << std::chrono::duration_cast<std::chrono::duration<double>>(
+                     end - start)
+                     .count()
+              << "\n";
+  }
 }
-

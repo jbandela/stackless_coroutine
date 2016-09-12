@@ -34,3 +34,7 @@ add_executable(stackless_coroutines_perf stackless_coroutines_perf.cpp)
 set_property(TARGET stackless_coroutines_perf PROPERTY CXX_STANDARD 14)
 target_link_libraries(stackless_coroutines_perf ${Boost_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
 
+add_executable(perf_future_vs_channel perf_future_vs_channel.cpp)
+set_property(TARGET perf_future_vs_channel PROPERTY CXX_STANDARD 14)
+target_link_libraries(perf_future_vs_channel ${Boost_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+

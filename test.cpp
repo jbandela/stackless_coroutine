@@ -43,26 +43,25 @@ template <class V, class T> auto get_future(T t) {
   return fut;
 }
 
-
 TEST_CASE("while if async", "[stackless]") {
-	auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
-		[](auto &context, auto &value) { value.return_value = 1; },
-		stackless_coroutine::make_while_true(
-			stackless_coroutine::make_if(
-				[](auto &value) { return value.return_value < 5; },
-				stackless_coroutine::make_block(
-					[](auto &context, auto &value) { return context.do_next(); }),
-				stackless_coroutine::make_block([](auto &context, auto &value) {
-		return context.do_break();
-	})),
-			[](auto &context, auto &value) {
-		do_thread([context]() mutable { context(1); });
-		return context.do_async();
-	},
-		[](auto &context, auto &value, int aval) {
-		value.return_value += aval;
-	})));
-	REQUIRE(f.get() == 5);
+  auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
+      [](auto &context, auto &value) { value.return_value = 1; },
+      stackless_coroutine::make_while_true(
+          stackless_coroutine::make_if(
+              [](auto &value) { return value.return_value < 5; },
+              stackless_coroutine::make_block(
+                  [](auto &context, auto &value) { return context.do_next(); }),
+              stackless_coroutine::make_block([](auto &context, auto &value) {
+                return context.do_break();
+              })),
+          [](auto &context, auto &value) {
+            do_thread([context]() mutable { context(1); });
+            return context.do_async();
+          },
+          [](auto &context, auto &value, int aval) {
+            value.return_value += aval;
+          })));
+  REQUIRE(f.get() == 5);
 }
 
 TEST_CASE("Simple test while", "[stackless]") {
@@ -180,8 +179,6 @@ TEST_CASE("while async get_context", "[stackless]") {
           })));
   REQUIRE(f.get() == 5);
 }
-
-
 
 template <class R> struct value_temp_t {
   R return_value;
@@ -589,624 +586,700 @@ TEST_CASE("directory generator [stackless]") {
 }
 
 TEST_CASE("many loop while [stackless]") {
-	auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
-		[](auto &context, auto &value) { value.return_value = 1; },
-		stackless_coroutine::make_while_true([](auto &context, auto &value) {
-		++value.return_value;
-		if (value.return_value > 9999)
-			return context.do_return();
-		else
-			return context.do_continue();
-	})
+  auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
+      [](auto &context, auto &value) { value.return_value = 1; },
+      stackless_coroutine::make_while_true([](auto &context, auto &value) {
+        ++value.return_value;
+        if (value.return_value > 9999)
+          return context.do_return();
+        else
+          return context.do_continue();
+      })
 
-	));
-	REQUIRE(f.get() == 10000);
+          ));
+  REQUIRE(f.get() == 10000);
 }
 
 TEST_CASE("simple channel [stackless]") {
 
-	auto chan = std::make_shared<channel<int>>();
+  auto chan = std::make_shared<channel<int>>();
 
-	static constexpr int max = 10000;
-	int total = 0;
+  static constexpr int max = 10000;
+  int total = 0;
 
-	struct reader_variables {
-		channel_reader<int> rchan;
-		int* result = nullptr;
+  struct reader_variables {
+    channel_reader<int> rchan;
+    int *result = nullptr;
 
-		reader_variables(std::shared_ptr<channel<int>> pchan, int* r) :rchan{ pchan }, result{ r } {}
-	};
+    reader_variables(std::shared_ptr<channel<int>> pchan, int *r)
+        : rchan{pchan}, result{r} {}
+  };
 
-	auto reader_block = stackless_coroutine::make_block(
-		stackless_coroutine::make_while_true(
-			[](auto& context, reader_variables& variables) {
-		variables.rchan.read(context);
-		return context.do_async();
+  auto reader_block =
+      stackless_coroutine::make_block(stackless_coroutine::make_while_true(
+          [](auto &context, reader_variables &variables) {
+            variables.rchan.read(context);
+            return context.do_async();
 
-			},
-			[](auto& context, reader_variables& variables,auto channel, int& value, bool closed) {
-				if (closed) {
-					return context.do_break();
-				}
-				(*variables.result) += value;
-				return context.do_continue();
-			}
+          },
+          [](auto &context, reader_variables &variables, auto channel,
+             int &value, bool closed) {
+            if (closed) {
+              return context.do_break();
+            }
+            (*variables.result) += value;
+            return context.do_continue();
+          }
 
-		)
+          )
 
-	);
+                                          );
 
-	struct writer_variables {
-		channel_writer<int> wchan;
-		int counter = 0;
+  struct writer_variables {
+    channel_writer<int> wchan;
+    int counter = 0;
 
-		writer_variables(std::shared_ptr<channel<int>> pchan, int c) :wchan{ pchan }, counter{ c } {}
-	};
+    writer_variables(std::shared_ptr<channel<int>> pchan, int c)
+        : wchan{pchan}, counter{c} {}
+  };
 
+  auto writer_block =
+      stackless_coroutine::make_block(stackless_coroutine::make_while_true(
+          [](auto &context, writer_variables &variables) {
+            if (variables.counter <= max) {
+              variables.wchan.write(variables.counter, context);
+              return context.do_async();
+            } else {
+              variables.wchan.close();
+              return context.do_async_break();
+            }
 
-	auto writer_block = stackless_coroutine::make_block(
-		stackless_coroutine::make_while_true(
-			[](auto& context, writer_variables& variables) {
-		if (variables.counter <= max) {
-			variables.wchan.write(variables.counter, context);
-			return context.do_async();
-				}
-		else {
-			variables.wchan.ptr->close();
-			return context.do_async_break();
-		}
+          },
+          [](auto &context, writer_variables &variables, auto channel,
+             bool closed) { ++variables.counter; }
 
-			},
-			[](auto& context, writer_variables& variables,auto channel, bool closed) {
-				++variables.counter;
-			}
+          )
 
-		)
+                                          );
+  std::mutex m;
+  std::condition_variable cvar;
+  std::atomic<int> finished{0};
+  auto rco =
+      stackless_coroutine::make_coroutine<reader_variables>(reader_block,
+                                                            [&](auto &&...) {
+                                                              ++finished;
+                                                              cvar.notify_all();
+                                                            },
+                                                            chan, &total);
+  auto wco =
+      stackless_coroutine::make_coroutine<writer_variables>(writer_block,
+                                                            [&](auto &&...) {
+                                                              ++finished;
+                                                              cvar.notify_all();
+                                                            },
+                                                            chan, 0);
 
-	);
-	std::mutex m;
-	std::condition_variable cvar;
-	std::atomic<int> finished{ 0 };
-	auto rco = stackless_coroutine::make_coroutine<reader_variables>(reader_block, [&](auto&&...) {++finished;cvar.notify_all();}, chan, &total);
-	auto wco = stackless_coroutine::make_coroutine<writer_variables>(writer_block, [&](auto&&...) {++finished;cvar.notify_all();}, chan, 0);
+  rco();
+  wco();
 
-	rco();
-	wco();
+  std::unique_lock<std::mutex> lock{m};
+  while (finished.load() < 2) {
+    cvar.wait(lock);
+  }
 
-	std::unique_lock<std::mutex> lock{ m };
-	while (finished.load() < 2) {
-		cvar.wait(lock);
-	}
-
-
-
-
-
-
-
-
-
-
-
- 
-  REQUIRE(total == (max*max + max)/2);
+  REQUIRE(total == (max * max + max) / 2);
 }
 
 TEST_CASE("simple channel select [stackless]") {
 
-	auto chan1 = std::make_shared<channel<int>>();
-	auto chan2 = std::make_shared<channel<int>>();
+  auto chan1 = std::make_shared<channel<int>>();
+  auto chan2 = std::make_shared<channel<int>>();
 
-	static constexpr int max = 10000;
-	int total = 0;
+  static constexpr int max = 10000;
+  int total = 0;
 
-	struct reader_variables {
-		channel_reader<int> rchan1;
-		channel_reader<int> rchan2;
-		int* result = nullptr;
-		channel_selector s;
+  struct reader_variables {
+    channel_reader<int> rchan1;
+    channel_reader<int> rchan2;
+    int *result = nullptr;
+    channel_selector s;
+    std::mutex mut;
 
-		reader_variables(std::shared_ptr<channel<int>> pchan1,std::shared_ptr<channel<int>> pchan2, int* r) :rchan1{ pchan1 },rchan2{ pchan2 }, result{ r } {}
-	};
+    reader_variables(std::shared_ptr<channel<int>> pchan1,
+                     std::shared_ptr<channel<int>> pchan2, int *r)
+        : rchan1{pchan1}, rchan2{pchan2}, result{r} {}
+  };
 
-	auto reader_block = stackless_coroutine::make_block(
-		stackless_coroutine::make_while_true(
-			[](auto& context, reader_variables& variables) {
-		variables.rchan1.read(variables.s, context);
-		variables.rchan2.read(variables.s, context);
-		return context.do_async();
+  auto reader_block =
+      stackless_coroutine::make_block(stackless_coroutine::make_while_true(
+          [](auto &context, reader_variables &variables) {
+            std::unique_lock<std::mutex> lock{variables.mut};
+            variables.rchan1.read(variables.s, context);
+            variables.rchan2.read(variables.s, context);
+            lock.unlock();
+            return context.do_async();
 
-	},
-	[](auto& context, reader_variables& variables, auto channel, auto value, bool closed) {
-		auto sel = variables.s.get_selector(channel, value,closed);
-		sel.select(variables.rchan1, [&](auto& v) {
+          },
+          [](auto &context, reader_variables &variables, auto... v) {
 
-		(*variables.result) += v;
-		})
-		.select(variables.rchan2, [&](auto& v) {
+            std::unique_lock<std::mutex> lock{variables.mut};
+            lock.unlock();
 
-		(*variables.result) += v;
-		});
-		if (closed) {
-			return context.do_break();
-		}
-	
-		return context.do_continue();
-	}
+            auto sel = variables.s.get_selector(v...);
+            sel.select(variables.rchan1,
+                       [&](auto &v) { (*variables.result) += v; })
+                .select(variables.rchan2,
+                        [&](auto &v) { (*variables.result) += v; });
+            if (!sel) {
+              return context.do_break();
+            }
 
-		)
+            return context.do_continue();
+          }
 
-	);
+          )
 
-	struct writer_variables {
-		channel_writer<int> wchan1;
-		channel_writer<int> wchan2;
-		int counter = 0;
+                                          );
 
-		writer_variables(std::shared_ptr<channel<int>> pchan1, std::shared_ptr<channel<int>> pchan2,int c) :wchan1{ pchan1 }, wchan2{ pchan2 },counter{ c } {}
-	};
+  struct writer_variables {
+    channel_writer<int> wchan1;
+    channel_writer<int> wchan2;
+    int counter = 0;
 
+    writer_variables(std::shared_ptr<channel<int>> pchan1,
+                     std::shared_ptr<channel<int>> pchan2, int c)
+        : wchan1{pchan1}, wchan2{pchan2}, counter{c} {}
+  };
 
-	auto writer_block = stackless_coroutine::make_block(
-		stackless_coroutine::make_while_true(
-			[](auto& context, writer_variables& variables) {
-		if (variables.counter <= max) {
-			if (variables.counter % 2) {
-				variables.wchan1.write(variables.counter, context);
-			}
-			else {
+  auto writer_block =
+      stackless_coroutine::make_block(stackless_coroutine::make_while_true(
+          [](auto &context, writer_variables &variables) {
+            if (variables.counter <= max) {
+              if (variables.counter % 2) {
+                variables.wchan1.write(variables.counter, context);
+              } else {
 
-				variables.wchan2.write(variables.counter, context);
-			}
-			return context.do_async();
-		}
-		else {
-			variables.wchan1.ptr->close();
-			variables.wchan2.ptr->close();
-			return context.do_async_break();
-		}
+                variables.wchan2.write(variables.counter, context);
+              }
+              return context.do_async();
+            } else {
+              variables.wchan1.close();
+              variables.wchan2.close();
+              return context.do_async_break();
+            }
 
-	},
-			[](auto& context, writer_variables& variables, auto channel, bool closed) {
-		++variables.counter;
-	}
+          },
+          [](auto &context, writer_variables &variables, auto channel,
+             bool closed) { ++variables.counter; }
 
-		)
+          )
 
-	);
-	std::mutex m;
-	std::condition_variable cvar;
-	std::atomic<int> finished{ 0 };
-	auto rco = stackless_coroutine::make_coroutine<reader_variables>(reader_block, [&](auto&&...) {
-		++finished;cvar.notify_all();
-	}, chan1,chan2, &total);
-	auto wco = stackless_coroutine::make_coroutine<writer_variables>(writer_block, [&](auto&&...) {
-		++finished;cvar.notify_all();
-	}, chan1,chan2, 0);
+                                          );
+  std::mutex m;
+  std::condition_variable cvar;
+  std::atomic<int> finished{0};
+  auto rco = stackless_coroutine::make_coroutine<reader_variables>(
+      reader_block,
+      [&](auto &&...) {
+        ++finished;
+        cvar.notify_all();
+      },
+      chan1, chan2, &total);
+  auto wco =
+      stackless_coroutine::make_coroutine<writer_variables>(writer_block,
+                                                            [&](auto &&...) {
+                                                              ++finished;
+                                                              cvar.notify_all();
+                                                            },
+                                                            chan1, chan2, 0);
 
-	rco();
-	wco();
+  rco();
+  wco();
 
-	std::unique_lock<std::mutex> lock{ m };
-	while (finished.load() < 2) {
-		cvar.wait_for(lock, std::chrono::seconds{ 1 });
-	}
+  std::unique_lock<std::mutex> lock{m};
+  while (finished.load() < 2) {
+    cvar.wait_for(lock, std::chrono::seconds{1});
+  }
 
-
-
-
-
-
-
-
-
-
-
-
-	REQUIRE(total == (max*max + max) / 2);
+  REQUIRE(total == (max * max + max) / 2);
 }
 
 TEST_CASE("simple channel buffered [stackless]") {
 
-	
-	auto chan = std::make_shared<channel<int>>(100);
+  auto chan = std::make_shared<channel<int>>(100);
 
-	for (int i = 1; i <= 6; ++i) {
-		chan->push(i);
-	}
+  for (int i = 1; i <= 6; ++i) {
+    chan->push(i);
+  }
 
-	static constexpr int max = 10000;
-	int total = 0;
+  static constexpr int max = 10000;
+  int total = 0;
 
-	struct reader_variables {
-		channel_reader<int> rchan;
-		int* result = nullptr;
+  struct reader_variables {
+    channel_reader<int> rchan;
+    int *result = nullptr;
 
-		reader_variables(std::shared_ptr<channel<int>> pchan, int* r) :rchan{ pchan }, result{ r } {}
-	};
+    reader_variables(std::shared_ptr<channel<int>> pchan, int *r)
+        : rchan{pchan}, result{r} {}
+  };
 
-	auto reader_block = stackless_coroutine::make_block(
-		stackless_coroutine::make_while_true(
-			[](auto& context, reader_variables& variables) {
-		variables.rchan.read(context);
-		return context.do_async();
+  auto reader_block =
+      stackless_coroutine::make_block(stackless_coroutine::make_while_true(
+          [](auto &context, reader_variables &variables) {
+            variables.rchan.read(context);
+            return context.do_async();
 
-	},
-			[](auto& context, reader_variables& variables, auto channel, int& value, bool closed) {
-		if (closed) {
-			return context.do_break();
-		}
-		(*variables.result) += value;
-		return context.do_continue();
-	}
+          },
+          [](auto &context, reader_variables &variables, auto channel,
+             int &value, bool closed) {
+            if (closed) {
+              return context.do_break();
+            }
+            (*variables.result) += value;
+            return context.do_continue();
+          }
 
-		)
+          )
 
-	);
+                                          );
 
-	struct writer_variables {
-		channel_writer<int> wchan;
-		int counter = 0;
+  struct writer_variables {
+    channel_writer<int> wchan;
+    int counter = 0;
 
-		writer_variables(std::shared_ptr<channel<int>> pchan, int c) :wchan{ pchan }, counter{ c } {}
-	};
+    writer_variables(std::shared_ptr<channel<int>> pchan, int c)
+        : wchan{pchan}, counter{c} {}
+  };
 
+  auto writer_block =
+      stackless_coroutine::make_block(stackless_coroutine::make_while_true(
+          [](auto &context, writer_variables &variables) {
+            if (variables.counter <= max) {
+              variables.wchan.write(variables.counter, context);
+              return context.do_async();
+            } else {
+              variables.wchan.close();
+              return context.do_async_break();
+            }
 
-	auto writer_block = stackless_coroutine::make_block(
-		stackless_coroutine::make_while_true(
-			[](auto& context, writer_variables& variables) {
-		if (variables.counter <= max) {
-			variables.wchan.write(variables.counter, context);
-			return context.do_async();
-		}
-		else {
-			variables.wchan.ptr->close();
-			return context.do_async_break();
-		}
+          },
+          [](auto &context, writer_variables &variables, auto channel,
+             bool closed) { ++variables.counter; }
 
-	},
-			[](auto& context, writer_variables& variables, auto channel, bool closed) {
-		++variables.counter;
-	}
+          )
 
-		)
+                                          );
+  std::mutex m;
+  std::condition_variable cvar;
+  std::atomic<int> finished{0};
+  auto rco =
+      stackless_coroutine::make_coroutine<reader_variables>(reader_block,
+                                                            [&](auto &&...) {
+                                                              ++finished;
+                                                              cvar.notify_all();
+                                                            },
+                                                            chan, &total);
+  auto wco =
+      stackless_coroutine::make_coroutine<writer_variables>(writer_block,
+                                                            [&](auto &&...) {
+                                                              ++finished;
+                                                              cvar.notify_all();
+                                                            },
+                                                            chan, 0);
 
-	);
-	std::mutex m;
-	std::condition_variable cvar;
-	std::atomic<int> finished{ 0 };
-	auto rco = stackless_coroutine::make_coroutine<reader_variables>(reader_block, [&](auto&&...) {++finished;cvar.notify_all();}, chan, &total);
-	auto wco = stackless_coroutine::make_coroutine<writer_variables>(writer_block, [&](auto&&...) {++finished;cvar.notify_all();}, chan, 0);
+  wco();
+  rco();
 
-	wco();
-	rco();
+  std::unique_lock<std::mutex> lock{m};
+  while (finished.load() < 2) {
+    cvar.wait(lock);
+  }
 
-	std::unique_lock<std::mutex> lock{ m };
-	while (finished.load() < 2) {
-		cvar.wait(lock);
-	}
-
-
-
-
-
-
-
-
-
-
-
-
-	REQUIRE(total == 21 + (max*max + max) / 2);
+  REQUIRE(total == 21 + (max * max + max) / 2);
 }
 
 TEST_CASE("simple channel select buffered [stackless]") {
 
-	auto chan1 = std::make_shared<channel<int>>(10);
-	auto chan2 = std::make_shared<channel<int>>(10);
+  auto chan1 = std::make_shared<channel<int>>(10);
+  auto chan2 = std::make_shared<channel<int>>(10);
 
-	for (int i = 1; i <= 10; ++i) {
-		REQUIRE(chan1->push(i) == true);
-		REQUIRE(chan2->push(i) == true);
-	}
-	REQUIRE(chan1->push(11) == false);
-	REQUIRE(chan2->push(11) == false);
-	
-	
+  for (int i = 1; i <= 10; ++i) {
+    REQUIRE(chan1->push(i) == true);
+    REQUIRE(chan2->push(i) == true);
+  }
+  REQUIRE(chan1->push(11) == false);
+  REQUIRE(chan2->push(11) == false);
 
-	static constexpr int max = 10000;
-	int total = 0;
+  static constexpr int max = 10000;
+  int total = 0;
 
-	struct reader_variables {
-		channel_reader<int> rchan1;
-		channel_reader<int> rchan2;
-		int* result = nullptr;
-		channel_selector s;
+  struct reader_variables {
+    channel_reader<int> rchan1;
+    channel_reader<int> rchan2;
+    int *result = nullptr;
+    channel_selector s;
+    std::mutex mut;
 
-		reader_variables(std::shared_ptr<channel<int>> pchan1, std::shared_ptr<channel<int>> pchan2, int* r) :rchan1{ pchan1 }, rchan2{ pchan2 }, result{ r } {}
-	};
+    reader_variables(std::shared_ptr<channel<int>> pchan1,
+                     std::shared_ptr<channel<int>> pchan2, int *r)
+        : rchan1{pchan1}, rchan2{pchan2}, result{r} {}
+  };
 
-	auto reader_block = stackless_coroutine::make_block(
-		stackless_coroutine::make_while_true(
-			[](auto& context, reader_variables& variables) {
-		variables.rchan1.read(variables.s, context);
-		variables.rchan2.read(variables.s, context);
-		return context.do_async();
+  auto reader_block =
+      stackless_coroutine::make_block(stackless_coroutine::make_while_true(
+          [](auto &context, reader_variables &variables) {
+            std::unique_lock<std::mutex> lock{variables.mut};
+            variables.rchan1.read(variables.s, context);
+            variables.rchan2.read(variables.s, context);
+            lock.unlock();
+            return context.do_async();
 
-	},
-			[](auto& context, reader_variables& variables, auto channel, auto value, bool closed) {
-		auto sel = variables.s.get_selector(channel, value, closed);
-		sel.select(variables.rchan1, [&](auto& v) {
+          },
+          [](auto &context, reader_variables &variables, auto channel,
+             auto value, bool closed) {
 
-			(*variables.result) += v;
-		})
-			.select(variables.rchan2, [&](auto& v) {
+            std::unique_lock<std::mutex> lock{variables.mut};
+            lock.unlock();
+            auto sel = variables.s.get_selector(channel, value, closed);
+            sel.select(variables.rchan1,
+                       [&](auto &v) { (*variables.result) += v; })
+                .select(variables.rchan2,
+                        [&](auto &v) { (*variables.result) += v; });
+            if (closed) {
+              return context.do_break();
+            }
 
-			(*variables.result) += v;
-		});
-		if (closed) {
-			return context.do_break();
-		}
+            return context.do_continue();
+          }
 
-		return context.do_continue();
-	}
+          )
 
-		)
+                                          );
 
-	);
+  struct writer_variables {
+    channel_writer<int> wchan1;
+    channel_writer<int> wchan2;
+    int counter = 0;
 
-	struct writer_variables {
-		channel_writer<int> wchan1;
-		channel_writer<int> wchan2;
-		int counter = 0;
+    writer_variables(std::shared_ptr<channel<int>> pchan1,
+                     std::shared_ptr<channel<int>> pchan2, int c)
+        : wchan1{pchan1}, wchan2{pchan2}, counter{c} {}
+  };
 
-		writer_variables(std::shared_ptr<channel<int>> pchan1, std::shared_ptr<channel<int>> pchan2, int c) :wchan1{ pchan1 }, wchan2{ pchan2 }, counter{ c } {}
-	};
+  auto writer_block =
+      stackless_coroutine::make_block(stackless_coroutine::make_while_true(
+          [](auto &context, writer_variables &variables) {
+            if (variables.counter <= max) {
+              if (variables.counter % 2) {
+                variables.wchan1.write(variables.counter, context);
+              } else {
 
+                variables.wchan2.write(variables.counter, context);
+              }
+              return context.do_async();
+            } else {
+              variables.wchan1.close();
+              variables.wchan2.close();
+              return context.do_async_break();
+            }
 
-	auto writer_block = stackless_coroutine::make_block(
-		stackless_coroutine::make_while_true(
-			[](auto& context, writer_variables& variables) {
-		if (variables.counter <= max) {
-			if (variables.counter % 2) {
-				variables.wchan1.write(variables.counter, context);
-			}
-			else {
+          },
+          [](auto &context, writer_variables &variables, auto channel,
+             bool closed) { ++variables.counter; }
 
-				variables.wchan2.write(variables.counter, context);
-			}
-			return context.do_async();
-		}
-		else {
-			variables.wchan1.ptr->close();
-			variables.wchan2.ptr->close();
-			return context.do_async_break();
-		}
+          )
 
-	},
-			[](auto& context, writer_variables& variables, auto channel, bool closed) {
-		++variables.counter;
-	}
+                                          );
+  std::mutex m;
+  std::condition_variable cvar;
+  std::atomic<int> finished{0};
+  auto rco = stackless_coroutine::make_coroutine<reader_variables>(
+      reader_block,
+      [&](auto &&...) {
+        ++finished;
+        cvar.notify_all();
+      },
+      chan1, chan2, &total);
+  auto wco =
+      stackless_coroutine::make_coroutine<writer_variables>(writer_block,
+                                                            [&](auto &&...) {
+                                                              ++finished;
+                                                              cvar.notify_all();
+                                                            },
+                                                            chan1, chan2, 0);
 
-		)
+  wco();
+  rco();
 
-	);
-	std::mutex m;
-	std::condition_variable cvar;
-	std::atomic<int> finished{ 0 };
-	auto rco = stackless_coroutine::make_coroutine<reader_variables>(reader_block, [&](auto&&...) {
-		++finished;cvar.notify_all();
-	}, chan1, chan2, &total);
-	auto wco = stackless_coroutine::make_coroutine<writer_variables>(writer_block, [&](auto&&...) {
-		++finished;cvar.notify_all();
-	}, chan1, chan2, 0);
+  std::unique_lock<std::mutex> lock{m};
+  while (finished.load() < 2) {
+    cvar.wait_for(lock, std::chrono::seconds{1});
+  }
 
-	wco();
-	rco();
+  REQUIRE(total == 110 + (max * max + max) / 2);
+}
 
-	std::unique_lock<std::mutex> lock{ m };
-	while (finished.load() < 2) {
-		cvar.wait_for(lock, std::chrono::seconds{ 1 });
-	}
+TEST_CASE("read write mixed channel select [stackless]") {
 
+  auto chan1 = std::make_shared<channel<int>>();
+  auto chan2 = std::make_shared<channel<int>>();
 
+  static constexpr int max = 10000;
+  int total = 0;
 
+  struct variables {
+    channel_reader<int> rchan1;
+    channel_reader<int> rchan2;
+    channel_writer<int> wchan1;
+    channel_writer<int> wchan2;
 
+    int *result = nullptr;
+    channel_selector s;
+    std::mutex mut;
 
+    int write_count = 0;
+    int read_count = 0;
 
+    variables(std::shared_ptr<channel<int>> pchan1,
+              std::shared_ptr<channel<int>> pchan2, int *r)
+        : rchan1{pchan1}, rchan2{pchan2}, wchan1{pchan1}, wchan2{pchan2},
+          result{r} {}
+  };
 
+  auto block =
+      stackless_coroutine::make_block(stackless_coroutine::make_while_true(
+          [](auto &context, variables &variables) {
+            std::unique_lock<std::mutex> lock{variables.mut};
 
+            if (variables.write_count <= max) {
+              if (variables.write_count % 2) {
+                variables.wchan1.write(variables.s, variables.write_count,
+                                       context);
+              } else {
+                variables.wchan2.write(variables.s, variables.write_count,
+                                       context);
+              }
+            } else {
+              variables.wchan1.close();
+              variables.wchan2.close();
+            }
 
+            if (variables.read_count <= max) {
+              variables.rchan1.read(variables.s, context);
+              variables.rchan2.read(variables.s, context);
+            }
+            lock.unlock();
+            return context.do_async();
 
+          },
+          [](auto &context, variables &variables, auto... v) {
 
+            std::unique_lock<std::mutex> lock{variables.mut};
+            lock.unlock();
 
-	REQUIRE(total == 110 + (max*max + max) / 2);
+            auto sel = variables.s.get_selector(v...);
+            sel.select(variables.rchan1,
+                       [&](auto &v) {
+
+                         (*variables.result) += v;
+                         ++variables.read_count;
+                       })
+                .select(variables.rchan2,
+                        [&](auto &v) {
+
+                          (*variables.result) += v;
+                          ++variables.read_count;
+                        })
+                .select(variables.wchan1, [&]() { ++variables.write_count; })
+                .select(variables.wchan2, [&]() { ++variables.write_count; });
+
+            if (!sel)
+              return context.do_return();
+            return context.do_continue();
+          }
+
+          )
+
+                                          );
+
+  std::mutex m;
+  std::condition_variable cvar;
+  std::atomic<int> finished{0};
+  auto co =
+      stackless_coroutine::make_coroutine<variables>(block,
+                                                     [&](auto &&...) {
+                                                       ++finished;
+                                                       cvar.notify_all();
+                                                     },
+                                                     chan1, chan2, &total);
+  co();
+  std::unique_lock<std::mutex> lock{m};
+  while (finished.load() < 1) {
+    cvar.wait_for(lock, std::chrono::seconds{1});
+  }
+
+  REQUIRE(total == (max * max + max) / 2);
 }
 
 #ifdef _MSC_VER
-template<class Func>
-goroutine await_reader(std::shared_ptr<channel<int>> reader_chan, int& ptotal,Func f) {
-	await_channel_reader<int> reader{ reader_chan };
-	while (true) {
-		auto p = co_await reader.read();
-		if (p.first == false) {
-			f();
-			return;
-		}
-		ptotal += p.second;
-	}
-
+template <class Func>
+goroutine await_reader(std::shared_ptr<channel<int>> reader_chan, int &ptotal,
+                       Func f) {
+  await_channel_reader<int> reader{reader_chan};
+  while (true) {
+    auto p = co_await reader.read();
+    if (p.first == false) {
+      f();
+      return;
+    }
+    ptotal += p.second;
+  }
 }
-template<class Func>
-goroutine await_writer(std::shared_ptr<channel<int>> writer_chan, int max,Func f) {
-	await_channel_writer<int> writer{ writer_chan };
-	for(int i = 0; i <= max; ++i){
-		co_await writer.write(i);
-	}
-	writer_chan->close();
-	f();
-
+template <class Func>
+goroutine await_writer(std::shared_ptr<channel<int>> writer_chan, int max,
+                       Func f) {
+  await_channel_writer<int> writer{writer_chan};
+  for (int i = 0; i <= max; ++i) {
+    co_await writer.write(i);
+  }
+  writer_chan->close();
+  f();
 }
-
-
 
 TEST_CASE("simple await channel [stackless]") {
 
-	auto chan = std::make_shared<channel<int>>();
+  auto chan = std::make_shared<channel<int>>();
 
-	static constexpr int max = 10000;
-	int total = 0;
+  static constexpr int max = 10000;
+  int total = 0;
 
-	std::mutex m;
-	std::condition_variable cvar;
-	std::atomic<int> finished{ 0 };
-	await_reader(chan,total, [&](auto&&...) {++finished;cvar.notify_all();});
-	await_writer(chan,max, [&](auto&&...) {++finished;cvar.notify_all();});
+  std::mutex m;
+  std::condition_variable cvar;
+  std::atomic<int> finished{0};
+  await_reader(chan, total, [&](auto &&...) {
+    ++finished;
+    cvar.notify_all();
+  });
+  await_writer(chan, max, [&](auto &&...) {
+    ++finished;
+    cvar.notify_all();
+  });
 
-	std::unique_lock<std::mutex> lock{ m };
-	while (finished.load() < 2) {
-		cvar.wait_for(lock, std::chrono::seconds{ 1 });
-	}
+  std::unique_lock<std::mutex> lock{m};
+  while (finished.load() < 2) {
+    cvar.wait_for(lock, std::chrono::seconds{1});
+  }
 
-
-
-
-
-
-
-
-
-
-
-
-	REQUIRE(total == (max*max + max) / 2);
+  REQUIRE(total == (max * max + max) / 2);
 }
 
+template <class Func>
+goroutine await_select_reader(std::shared_ptr<channel<int>> reader_chan1,
+                              std::shared_ptr<channel<int>> reader_chan2,
+                              int &ptotal, Func f) {
+  await_channel_reader<int> reader1{reader_chan1};
+  await_channel_reader<int> reader2{reader_chan2};
+  while (true) {
+    auto lambda = [&](auto &v) { ptotal += v; };
 
+    auto res = co_await read_select(reader1, lambda, reader2, lambda);
 
-template<class Func>
-goroutine await_select_reader(std::shared_ptr<channel<int>> reader_chan1, std::shared_ptr<channel<int>> reader_chan2,int& ptotal, Func f) {
-	await_channel_reader<int> reader1{ reader_chan1 };
-	await_channel_reader<int> reader2{ reader_chan2 };
-	while (true) {
-		auto lambda = [&](auto& v) {
-			ptotal += v;
-		};
-
-
-		auto res = co_await read_select(reader1, lambda,
-			reader2, lambda);
-			
-		if (res.first == false) {
-			f();
-			return;
-		}
-	}
-
+    if (res.first == false) {
+      f();
+      return;
+    }
+  }
 }
-template<class Func>
-goroutine await_select_writer(std::shared_ptr<channel<int>> writer_chan1, std::shared_ptr<channel<int>> writer_chan2, int max, Func f) {
-	await_channel_writer<int> writer1{ writer_chan1 };
-	await_channel_writer<int> writer2{ writer_chan2 };
-	for (int i = 0; i <= max; ++i) {
-		if (i % 2) {
-			co_await writer1.write(i);
-		}
-		else {
+template <class Func>
+goroutine await_select_writer(std::shared_ptr<channel<int>> writer_chan1,
+                              std::shared_ptr<channel<int>> writer_chan2,
+                              int max, Func f) {
+  await_channel_writer<int> writer1{writer_chan1};
+  await_channel_writer<int> writer2{writer_chan2};
+  for (int i = 0; i <= max; ++i) {
+    if (i % 2) {
+      co_await writer1.write(i);
+    } else {
 
-			co_await writer2.write(i);
-		}
-	}
-	writer_chan1->close();
-	writer_chan2->close();
-	f();
-
+      co_await writer2.write(i);
+    }
+  }
+  writer_chan1->close();
+  writer_chan2->close();
+  f();
 }
 
 TEST_CASE("simple await select channel [stackless]") {
 
-	auto chan1 = std::make_shared<channel<int>>();
-	auto chan2 = std::make_shared<channel<int>>();
+  auto chan1 = std::make_shared<channel<int>>();
+  auto chan2 = std::make_shared<channel<int>>();
 
-	static constexpr int max = 10000;
-	int total = 0;
+  static constexpr int max = 10000;
+  int total = 0;
 
-	std::mutex m;
-	std::condition_variable cvar;
-	std::atomic<int> finished{ 0 };
-	await_select_reader(chan1,chan2, total, [&](auto&&...) {++finished;cvar.notify_all();});
-	await_select_writer(chan1,chan2, max, [&](auto&&...) {++finished;cvar.notify_all();});
+  std::mutex m;
+  std::condition_variable cvar;
+  std::atomic<int> finished{0};
+  await_select_reader(chan1, chan2, total, [&](auto &&...) {
+    ++finished;
+    cvar.notify_all();
+  });
+  await_select_writer(chan1, chan2, max, [&](auto &&...) {
+    ++finished;
+    cvar.notify_all();
+  });
 
-	std::unique_lock<std::mutex> lock{ m };
-	while (finished.load() < 2) {
-		cvar.wait(lock);
-	}
+  std::unique_lock<std::mutex> lock{m};
+  while (finished.load() < 2) {
+    cvar.wait(lock);
+  }
 
-
-
-
-
-
-
-
-
-
-
-
-	REQUIRE(total == (max*max + max) / 2);
+  REQUIRE(total == (max * max + max) / 2);
 }
-template<class Func>
-goroutine await_select_range_reader(std::shared_ptr<channel<int>> reader_chan1, std::shared_ptr<channel<int>> reader_chan2,int& ptotal, Func f) {
-	std::vector<await_channel_reader<int>> vec;
-	vec.emplace_back(reader_chan1);
-	vec.emplace_back(reader_chan2);
-	while (true) {
-		auto lambda = [&](auto& v) {
-			ptotal += v;
-		};
+template <class Func>
+goroutine await_select_range_reader(std::shared_ptr<channel<int>> reader_chan1,
+                                    std::shared_ptr<channel<int>> reader_chan2,
+                                    int &ptotal, Func f) {
+  std::vector<await_channel_reader<int>> vec;
+  vec.emplace_back(reader_chan1);
+  vec.emplace_back(reader_chan2);
+  while (true) {
+    auto lambda = [&](auto &v) { ptotal += v; };
 
+    auto res = co_await read_select_range(vec, lambda);
 
-		auto res = co_await read_select_range(vec, lambda);
-			
-		if (res.first == false) {
-			f();
-			return;
-		}
-	}
-
+    if (res.first == false) {
+      f();
+      return;
+    }
+  }
 }
 TEST_CASE("simple await select range channel [stackless]") {
 
-	auto chan1 = std::make_shared<channel<int>>();
-	auto chan2 = std::make_shared<channel<int>>();
+  auto chan1 = std::make_shared<channel<int>>();
+  auto chan2 = std::make_shared<channel<int>>();
 
-	static constexpr int max = 10000;
-	int total = 0;
+  static constexpr int max = 10000;
+  int total = 0;
 
-	std::mutex m;
-	std::condition_variable cvar;
-	std::atomic<int> finished{ 0 };
-	await_select_range_reader(chan1,chan2, total, [&](auto&&...) {++finished;cvar.notify_all();});
-	await_select_writer(chan1,chan2, max, [&](auto&&...) {++finished;cvar.notify_all();});
+  std::mutex m;
+  std::condition_variable cvar;
+  std::atomic<int> finished{0};
+  await_select_range_reader(chan1, chan2, total, [&](auto &&...) {
+    ++finished;
+    cvar.notify_all();
+  });
+  await_select_writer(chan1, chan2, max, [&](auto &&...) {
+    ++finished;
+    cvar.notify_all();
+  });
 
-	std::unique_lock<std::mutex> lock{ m };
-	while (finished.load() < 2) {
-		cvar.wait(lock);
-	}
+  std::unique_lock<std::mutex> lock{m};
+  while (finished.load() < 2) {
+    cvar.wait(lock);
+  }
 
-
-
-
-
-
-
-
-
-
-
-
-	REQUIRE(total == (max*max + max) / 2);
+  REQUIRE(total == (max * max + max) / 2);
 }
 
-
-#endif 
+#endif
