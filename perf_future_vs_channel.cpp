@@ -169,7 +169,7 @@ goroutine reader_select(std::shared_ptr<channel<int>> chan1,
   await_channel_reader<int> reader1{chan1};
   await_channel_reader<int> reader2{chan2};
   for (;;) {
-    auto p = co_await read_select(reader1, [](auto) {}, reader2, [](auto) {});
+    auto p = co_await select(reader1, [](auto) {}, reader2, [](auto) {});
     if (p.first == false)
       break;
   }

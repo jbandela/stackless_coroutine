@@ -1021,8 +1021,8 @@ TEST_CASE("simple channel select buffered [stackless]") {
 
 TEST_CASE("read write mixed channel select [stackless]") {
 
-  auto chan1 = std::make_shared<channel<int>>();
-  auto chan2 = std::make_shared<channel<int>>();
+  auto chan1 = std::make_shared<channel<int>>(1);
+  auto chan2 = std::make_shared<channel<int>>(1);
 
   static constexpr int max = 10000;
   int total = 0;
@@ -1059,15 +1059,14 @@ TEST_CASE("read write mixed channel select [stackless]") {
                 variables.wchan2.write(variables.s, variables.write_count,
                                        context);
               }
-            } else {
-              variables.wchan1.close();
-              variables.wchan2.close();
             }
-
             if (variables.read_count <= max) {
               variables.rchan1.read(variables.s, context);
               variables.rchan2.read(variables.s, context);
+            } else {
+              return context.do_async_return();
             }
+
             lock.unlock();
             return context.do_async();
 
@@ -1182,7 +1181,7 @@ goroutine await_select_reader(std::shared_ptr<channel<int>> reader_chan1,
   while (true) {
     auto lambda = [&](auto &v) { ptotal += v; };
 
-    auto res = co_await read_select(reader1, lambda, reader2, lambda);
+    auto res = co_await select(reader1, lambda, reader2, lambda);
 
     if (res.first == false) {
       f();
@@ -1246,7 +1245,7 @@ goroutine await_select_range_reader(std::shared_ptr<channel<int>> reader_chan1,
   while (true) {
     auto lambda = [&](auto &v) { ptotal += v; };
 
-    auto res = co_await read_select_range(vec, lambda);
+    auto res = co_await select_range(vec, lambda);
 
     if (res.first == false) {
       f();
@@ -1282,4 +1281,67 @@ TEST_CASE("simple await select range channel [stackless]") {
   REQUIRE(total == (max * max + max) / 2);
 }
 
+template <class Func>
+goroutine await_select_mixed(std::shared_ptr<channel<int>> chan1,
+                             std::shared_ptr<channel<int>> chan2, int &ptotal,
+                             int max, Func f) {
+
+  await_channel_reader<int> reader1{chan1};
+  await_channel_reader<int> reader2{chan2};
+  await_channel_writer<int> writer1{chan1};
+  await_channel_writer<int> writer2{chan2};
+
+  int count = 0;
+
+  auto lambda = [&](auto &v) { ptotal += v; };
+  while (true) {
+
+    if (count <= max) {
+      auto &writer = *[&]() {
+        if (count % 2) {
+          return &writer1;
+        } else {
+          return &writer2;
+        }
+      }();
+      co_await select(writer, count, [&]() { ++count; }, reader1, lambda,
+                      reader2, lambda);
+
+    } else {
+      // if (!chan1->closed)
+      chan1->close();
+      // if (!chan2->closed)
+      chan2->close();
+      auto res = co_await select(reader1, lambda, reader2, lambda);
+
+      if (res.first == false) {
+        f();
+        return;
+      }
+    }
+  }
+}
+TEST_CASE("mixed await select channel [stackless]") {
+  return;
+
+  auto chan1 = std::make_shared<channel<int>>(1);
+  auto chan2 = std::make_shared<channel<int>>(1);
+
+  static constexpr int max = 10000;
+  int total = 0;
+
+  std::mutex m;
+  std::condition_variable cvar;
+  std::atomic<int> finished{0};
+  await_select_mixed(chan1, chan2, total, max, [&](auto &&...) {
+    ++finished;
+    cvar.notify_all();
+  });
+  std::unique_lock<std::mutex> lock{m};
+  while (finished.load() < 1) {
+    cvar.wait(lock);
+  }
+
+  REQUIRE(total == (max * max + max) / 2);
+}
 #endif

@@ -17,6 +17,7 @@ struct node_base {
   void *data = nullptr;
   function_t func = nullptr;
   bool closed = false;
+  bool success = false;
 };
 
 // Assumes lock has already been taken
@@ -249,6 +250,7 @@ template <class T> struct channel {
     if (closed) {
       if (set_success(writer->pdone)) {
         writer->closed = true;
+        writer->success = true;
         executor->add(writer);
       }
     }
@@ -267,6 +269,7 @@ template <class T> struct channel {
           queue.push(std::move(writer->value));
           lock.unlock();
           writer->closed = false;
+          writer->success = true;
           executor->add(writer);
           return;
         }
@@ -288,8 +291,13 @@ template <class T> struct channel {
       reader->closed = false;
       writer->closed = false;
 
+      reader->success = true;
+      writer->success = true;
+
       executor->add(reader);
-      executor->add(writer);
+
+      if (writer->pdone == nullptr || writer->pdone != reader->pdone)
+        executor->add(writer);
     }
   }
   void read(node_t *reader) {
@@ -299,15 +307,18 @@ template <class T> struct channel {
         reader->value = std::move(queue.pop());
         lock.unlock();
         reader->closed = false;
+
+        reader->success = true;
         executor->add(reader);
         return;
       }
       return;
     }
-    if (closed) {
+    if (closed && write_head.load() == nullptr) {
       lock.unlock();
       if (set_success(reader->pdone)) {
         reader->closed = true;
+        reader->success = true;
         executor->add(reader);
       }
       return;
@@ -336,9 +347,13 @@ template <class T> struct channel {
       writer->closed = false;
       reader->closed = false;
 
+      writer->success = true;
+      reader->success = true;
+
       executor->add(writer);
 
-      executor->add(reader);
+      if (reader->pdone == nullptr || writer->pdone != reader->pdone)
+        executor->add(reader);
     }
   }
 
@@ -375,6 +390,7 @@ template <class T> struct channel {
 
       old->closed = true;
       if (set_success(old->pdone)) {
+        old->success = true;
         executor->add(old);
       }
     }
@@ -385,6 +401,7 @@ template <class T> struct channel {
       n = static_cast<node_t *>(n->next);
       old->closed = true;
       if (set_success(old->pdone)) {
+        old->success = true;
         executor->add(old);
       }
     }
@@ -425,6 +442,7 @@ struct channel_reader {
   using value_type = T;
 
   auto get_node() const { return &node; }
+  auto get_node() { return &node; }
   template <class Context> void read(Context context) {
 
     node.func = [](void *n) {
@@ -441,10 +459,12 @@ struct channel_reader {
     node.func = [](void *n) {
 
       auto node = static_cast<node_t *>(n);
+
       auto context = Context::get_context(node->data);
       context(node, detail::void_holder{&node->value}, node->closed);
     };
     node.data = &context.f().value();
+    node.success = false;
     node.pdone = &s.done;
     ptr->read(&node);
   }
@@ -468,11 +488,13 @@ struct channel_writer {
   static auto get_role() { return detail::writer_type{}; }
 
   auto get_node() const { return &node; }
+  auto get_node() { return &node; }
   template <class Context> void write(T t, Context context) {
     node.value = std::move(t);
 
     node.func = [](void *n) {
       auto node = static_cast<node_t *>(n);
+
       auto context = Context::get_context(node->data);
       context(node, node->closed);
     };
@@ -486,12 +508,14 @@ struct channel_writer {
 
     node.func = [](void *n) {
       auto node = static_cast<node_t *>(n);
+
       auto context = Context::get_context(node->data);
       context(node, detail::void_holder{&node->value}, node->closed);
     };
 
     node.data = &context.f().value();
     node.pdone = &s.done;
+    node.success = false;
     ptr->write(&node);
   }
 
@@ -507,6 +531,17 @@ private:
   PtrType ptr;
 };
 
+namespace detail {
+template <class F, class Value>
+void do_call(F &&f, Value *value, detail::reader_type) {
+  f(*value);
+}
+template <class F, class Value>
+void do_call(F &&f, Value *, detail::writer_type) {
+  f();
+}
+}
+
 struct channel_selector {
   std::atomic<int> done{0};
 
@@ -520,23 +555,16 @@ struct channel_selector {
                   detail::void_holder value, bool closed)
         : sel{s}, channel{channel}, value{value}, closed{closed} {}
 
-    template <class F, class Value>
-    void do_call(F &&f, Value *value, detail::reader_type) {
-      f(*value);
-    }
-    template <class F, class Value>
-    void do_call(F &&f, Value *, detail::writer_type) {
-      f();
-    }
-
     template <class ChannelReader, class F>
     select_helper &select(ChannelReader &c, F &&f) {
       c.remove();
-      if (channel == c.get_node() && !closed) {
+      auto ns = c.get_node()->success;
+      c.get_node()->success = false;
+      if (ns && !c.get_node()->closed) {
         using value_type = typename ChannelReader::value_type;
         success = true;
-        do_call(f, static_cast<value_type *>(value.value),
-                ChannelReader::get_role());
+        detail::do_call(f, static_cast<value_type *>(value.value),
+                        ChannelReader::get_role());
       }
       return *this;
     }
@@ -545,12 +573,16 @@ struct channel_selector {
     select_helper &select_range(Range &r, F &&f) {
       for (auto &c : r) {
         c.remove();
-        if (channel == c.get_node() && !closed) {
+
+        auto ns = c.get_node()->success;
+
+        c.get_node()->success = false;
+        if (ns && !c.get_node()->closed) {
           using ChannelReader = std::decay_t<decltype(c)>;
           using value_type = typename ChannelReader::value_type;
           success = true;
-          do_call(f, static_cast<value_type *>(value.value),
-                  ChannelReader::get_role());
+          detail::do_call(f, static_cast<value_type *>(value.value),
+                          ChannelReader::get_role());
         }
       }
       return *this;
@@ -585,10 +617,13 @@ struct await_channel_reader {
   using node_t = typename channel<T>::node_t;
   node_t node{};
 
+  static auto get_role() { return detail::reader_type{}; }
+
   using value_type = T;
   PtrType ptr;
 
   auto get_node() const { return &node; }
+  auto get_node() { return &node; }
   auto read() {
     struct awaiter {
       await_channel_reader *pthis;
@@ -598,6 +633,7 @@ struct await_channel_reader {
         auto &node = pthis->node;
         node.func = [](void *n) {
           auto node = static_cast<node_t *>(n);
+
           auto rh =
               std::experimental::coroutine_handle<>::from_address(node->data);
           rh();
@@ -622,6 +658,74 @@ struct await_channel_reader {
     a.prh = rh.to_address();
     node.func = [](void *n) {
       auto node = static_cast<node_t *>(n);
+
+      auto pa = static_cast<Awaiter *>(node->data);
+      std::unique_lock<std::mutex> lock{pa->mut};
+      lock.unlock();
+      auto rh = std::experimental::coroutine_handle<>::from_address(pa->prh);
+      pa->selected_node = node;
+      rh();
+    };
+    node.data = &a;
+    node.success = false;
+
+    node.pdone = &s.done;
+    ptr->read(&node);
+  }
+  void remove() { ptr->remove_reader(&node); }
+
+  explicit await_channel_reader(PtrType p) : ptr{p} {}
+  ~await_channel_reader() { ptr->remove_reader(&node); }
+};
+
+template <class T, class PtrType = std::shared_ptr<channel<T>>>
+struct await_channel_writer {
+
+  static auto get_role() { return detail::writer_type{}; }
+
+  using node_t = typename channel<T>::node_t;
+  node_t node{};
+
+  PtrType ptr;
+
+  auto get_node() const { return &node; }
+  auto get_node() { return &node; }
+  auto write(T t) {
+    node.value = std::move(t);
+    struct awaiter {
+      await_channel_writer *pthis;
+
+      bool await_ready() { return false; }
+      void await_suspend(std::experimental::coroutine_handle<> rh) {
+        pthis->node.func = [](void *n) {
+          auto node = static_cast<node_t *>(n);
+
+          auto rh =
+              std::experimental::coroutine_handle<>::from_address(node->data);
+          rh();
+        };
+        pthis->node.data = rh.to_address();
+        ;
+        pthis->ptr->write(&pthis->node);
+      }
+      auto await_resume() {
+        if (pthis) {
+          return pthis->node.closed;
+        } else {
+          return false;
+        }
+      }
+    };
+    return awaiter{this};
+  }
+  template <class Select, class T, class Awaiter>
+  void write(Select &s, T t, std::experimental::coroutine_handle<> rh,
+             Awaiter &a) {
+    node.value = std::move(t);
+    a.prh = rh.to_address();
+    node.func = [](void *n) {
+      auto node = static_cast<node_t *>(n);
+
       auto pa = static_cast<Awaiter *>(node->data);
       std::unique_lock<std::mutex> lock{pa->mut};
       lock.unlock();
@@ -631,13 +735,30 @@ struct await_channel_reader {
     };
     node.data = &a;
 
+    node.success = false;
     node.pdone = &s.done;
-    ptr->read(&node);
+    ptr->write(&node);
   }
-  void remove() { ptr->remove_reader(&node); }
+  // template<class Select, class Context>
+  // bool write(T t, Select& s, Context context) {
+  //	node.value = std::move(t);
 
-  explicit await_channel_reader(PtrType p) : ptr{p} {}
-  ~await_channel_reader() { ptr->remove_reader(&node); }
+  //	node.func = [](void* n) {
+  //		auto node = static_cast<node_t*>(n);
+  //		auto context = Context::get_context(node->data);
+  //		context(node, node->closed);
+  //	};
+
+  //	node.data = &context.f().value();
+  //	node.pdone = &s.done;
+  //	return ptr->write(&node);
+  //}
+
+  void remove() { ptr->remove_writer(&node); }
+
+  explicit await_channel_writer(PtrType p) : ptr{p} {}
+
+  ~await_channel_writer() { ptr->remove_writer(&node); }
 };
 
 namespace detail {
@@ -661,44 +782,98 @@ await_channel_reader<T, Ptr> *
 get_await_select_type(await_channel_reader<T, Ptr> &t) {
   return &t;
 }
+template <class T, class Ptr>
+await_channel_writer<T, Ptr> *
+get_await_select_type(await_channel_writer<T, Ptr> &t) {
+  return &t;
+}
 
 template <class... T> auto get_fd_tuple(T &&... t) {
   return std::make_tuple(get_await_select_type(t)...);
 }
 
 template <class This, class Reader, class Func>
-void do_read(This *pthis, std::experimental::coroutine_handle<> &rh, Reader r,
-             Func &f) {
+void do_readwrite(detail::reader_type, This *pthis,
+                  std::experimental::coroutine_handle<> &rh, Reader r,
+                  Func &f) {
+  r->get_node()->success = false;
   r->read(pthis->s, rh, *pthis);
+}
+template <class This, class Writer, class Func, class T>
+void do_readwrite(detail::writer_type, This *pthis,
+                  std::experimental::coroutine_handle<> &rh, Writer w, T t,
+                  Func &f) {
+
+  w->get_node()->success = false;
+  w->write(pthis->s, std::move(t), rh, *pthis);
 }
 
-template <class This, class Reader, class Func, class R1, class F1, class... T>
-void do_read(This *pthis, std::experimental::coroutine_handle<> &rh, Reader r,
-             Func &f, R1 r1, F1 &f1, T &&... t) {
+template <class This, class Reader, class Func, class R1, class... Rest>
+void do_readwrite(detail::reader_type, This *pthis,
+                  std::experimental::coroutine_handle<> &rh, Reader r, Func &f,
+                  R1 r1, Rest &&... rest) {
+
+  r->get_node()->success = false;
   r->read(pthis->s, rh, *pthis);
-  do_read(pthis, rh, r1, f1, std::forward<T>(t)...);
+  do_readwrite(r1->get_role(), pthis, rh, r1, std::forward<Rest>(rest)...);
 }
+template <class This, class Writer, class Func, class R1, class T,
+          class... Rest>
+void do_readwrite(detail::writer_type, This *pthis,
+                  std::experimental::coroutine_handle<> &rh, Writer w, T t,
+                  Func &f, R1 r1, Rest &&... rest) {
+
+  w->get_node()->success = false;
+  w->write(pthis->s, std::move(t), rh, *pthis);
+  do_readwrite(r1->get_role(), pthis, rh, r1, std::forward<Rest>(rest)...);
+}
+
 template <class This, class Reader, class Func>
-void do_wake(This *pthis, Reader r, Func &f) {
+void do_wake(detail::reader_type, This *pthis, Reader r, Func &f) {
   r->remove();
-  if (r->get_node() == pthis->selected_node &&
-      pthis->selected_node->closed == false) {
-    f(r->get_node()->value);
+  auto ns = r->get_node()->success;
+  r->get_node()->success = false;
+  if (ns && !r->get_node()->closed) {
+    do_call(f, &r->get_node()->value, r->get_role());
+  }
+}
+template <class This, class Reader, class Func, class T>
+void do_wake(detail::writer_type, This *pthis, Reader r, T &&, Func &f) {
+  r->remove();
+  auto ns = r->get_node()->success;
+  r->get_node()->success = false;
+  if (ns && !r->get_node()->closed) {
+    do_call(f, &r->get_node()->value, r->get_role());
   }
 }
 
-template <class This, class Reader, class Func, class R1, class F1, class... T>
-void do_wake(This *pthis, Reader r, Func &f, R1 r1, F1 &f1, T &&... t) {
+template <class This, class Reader, class Func, class R1, class... Rest>
+void do_wake(detail::reader_type, This *pthis, Reader r, Func &f, R1 r1,
+             Rest &&... rest) {
   r->remove();
-  if (r->get_node() == pthis->selected_node &&
-      pthis->selected_node->closed == false) {
-    f(r->get_node()->value);
+  auto ns = r->get_node()->success;
+  r->get_node()->success = false;
+  if (ns && !r->get_node()->closed) {
+    do_call(f, &r->get_node()->value, r->get_role());
   }
-  do_wake(pthis, r1, f1, std::forward<T>(t)...);
+  do_wake(r1->get_role(), pthis, r1, std::forward<Rest>(rest)...);
+}
+
+template <class This, class Reader, class Func, class T, class R1,
+          class... Rest>
+void do_wake(detail::writer_type, This *pthis, Reader r, T &&, Func &f, R1 r1,
+             Rest &&... rest) {
+  r->remove();
+  auto ns = r->get_node()->success;
+  r->get_node()->success = false;
+  if (ns && !r->get_node()->closed) {
+    do_call(f, &r->get_node()->value, r->get_role());
+  }
+  do_wake(r1->get_role(), pthis, r1, std::forward<Rest>(rest)...);
 }
 }
 
-template <class... T> auto read_select(T &&... t) {
+template <class... T> auto select(T &&... t) {
   auto tup = detail::get_fd_tuple(std::forward<T>(t)...);
   using Tuple = std::decay_t<decltype(tup)>;
   struct awaiter {
@@ -718,15 +893,19 @@ template <class... T> auto read_select(T &&... t) {
       std::unique_lock<std::mutex> lock{mut};
 
       detail::apply(
-          [this, &rh](auto &&... ts) {
-            detail::do_read(this, rh, std::forward<decltype(ts)>(ts)...);
+          [this, &rh](auto &&r1, auto &&... ts) mutable {
+            detail::do_readwrite(r1->get_role(), this, rh,
+                                 std::forward<decltype(r1)>(r1),
+                                 std::forward<decltype(ts)>(ts)...);
           },
           t);
     }
     auto await_resume() {
       detail::apply(
-          [this](auto &&... ts) {
-            detail::do_wake(this, std::forward<decltype(ts)>(ts)...);
+          [this](auto &&r1, auto &&... ts) {
+            detail::do_wake(r1->get_role(), this,
+                            std::forward<decltype(r1)>(r1),
+                            std::forward<decltype(ts)>(ts)...);
           },
           t);
       return std::make_pair(!selected_node->closed, selected_node);
@@ -736,7 +915,7 @@ template <class... T> auto read_select(T &&... t) {
   return awaiter{std::move(tup)};
 }
 
-template <class Range, class Func> auto read_select_range(Range &r, Func f) {
+template <class Range, class Func> auto select_range(Range &r, Func f) {
   using std::begin;
   using Iter = decltype(begin(r));
   struct awaiter {
@@ -756,7 +935,7 @@ template <class Range, class Func> auto read_select_range(Range &r, Func f) {
     void await_suspend(std::experimental::coroutine_handle<> rh) {
       std::unique_lock<std::mutex> lock{mut};
       for (auto &r : *rng) {
-        detail::do_read(this, rh, &r, f);
+        detail::do_readwrite(r.get_role(), this, rh, &r, f);
       }
     }
     auto await_resume() {
@@ -766,11 +945,14 @@ template <class Range, class Func> auto read_select_range(Range &r, Func f) {
       auto selected_iter = end(*rng);
       for (; iter != end(*rng); ++iter) {
         iter->remove();
+        auto ns = iter->get_node()->success;
+        iter->get_node()->success = false;
+        if (ns && !iter->get_node()->closed) {
+          detail::do_call(f, &iter->get_node()->value, iter->get_role());
+        }
+
         if (iter->get_node() == selected_node) {
           selected_iter = iter;
-          if (selected_node->closed == false) {
-            f(iter->get_node()->value);
-          }
         }
       }
       assert(selected_iter != end(*rng));
@@ -781,63 +963,5 @@ template <class Range, class Func> auto read_select_range(Range &r, Func f) {
 
   return awaiter{r, std::move(f)};
 }
-
-template <class T, class PtrType = std::shared_ptr<channel<T>>>
-struct await_channel_writer {
-
-  using node_t = typename channel<T>::node_t;
-  node_t node{};
-
-  PtrType ptr;
-
-  auto get_node() const { return &node; }
-  auto write(T t) {
-    node.value = std::move(t);
-    struct awaiter {
-      await_channel_writer *pthis;
-
-      bool await_ready() { return false; }
-      void await_suspend(std::experimental::coroutine_handle<> rh) {
-        pthis->node.func = [](void *n) {
-          auto node = static_cast<node_t *>(n);
-          auto rh =
-              std::experimental::coroutine_handle<>::from_address(node->data);
-          rh();
-        };
-        pthis->node.data = rh.to_address();
-        ;
-        pthis->ptr->write(&pthis->node);
-      }
-      auto await_resume() {
-        if (pthis) {
-          return pthis->node.closed;
-        } else {
-          return false;
-        }
-      }
-    };
-    return awaiter{this};
-  }
-  // template<class Select, class Context>
-  // bool write(T t, Select& s, Context context) {
-  //	node.value = std::move(t);
-
-  //	node.func = [](void* n) {
-  //		auto node = static_cast<node_t*>(n);
-  //		auto context = Context::get_context(node->data);
-  //		context(node, node->closed);
-  //	};
-
-  //	node.data = &context.f().value();
-  //	node.pdone = &s.done;
-  //	return ptr->write(&node);
-  //}
-
-  void remove() { ptr->remove_writer(&node); }
-
-  explicit await_channel_writer(PtrType p) : ptr{p} {}
-
-  ~await_channel_writer() { ptr->remove_writer(&node); }
-};
 
 #endif // _MSC_VER
