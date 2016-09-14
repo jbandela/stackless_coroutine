@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.0)
 set(Boost_USE_STATIC_LIBS ON)
-find_package(Boost 1.60 REQUIRED COMPONENTS coroutine context thread system )
+find_package(Boost 1.62 REQUIRED COMPONENTS coroutine context thread system fiber )
 include_directories(${Boost_INCLUDE_DIRS})
 find_package(Threads)
 add_executable(unit_test test.cpp test2.cpp)
