@@ -46,7 +46,7 @@ struct async_result {
 
 template <class F, std::size_t Pos> struct dummy_coroutine_context {
 
-  template <class... T> operation operator()(T &&... t) {}
+	template <class... T> operation operator()(T &&... t) { return operation::_continue; }
 
   operation do_return() { return operation::_return; };
   operation do_break() { return operation::_break; }
@@ -66,7 +66,7 @@ template <class F, std::size_t Pos> struct dummy_coroutine_context {
   dummy_coroutine_context(dummy_coroutine_context &&) {}
   template <class T> dummy_coroutine_context(T &) {}
 
-  template <class V> static dummy_coroutine_context get_context(V *v);
+  template <class V> static dummy_coroutine_context get_context(V *v) { return{}; }
 
   enum { position = Pos };
   enum { level = F::level };
