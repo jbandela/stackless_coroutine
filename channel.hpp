@@ -21,9 +21,9 @@ struct node_base {
 };
 
 // Assumes lock has already been taken
-inline void add(std::atomic<node_base *> &head, node_base *&tail,
+inline void add(node_base * &head, node_base *&tail,
                 node_base *node) {
-  if (!head.load()) {
+  if (!head) {
     node->next = nullptr;
     node->previous = nullptr;
     tail = node;
@@ -38,9 +38,9 @@ inline void add(std::atomic<node_base *> &head, node_base *&tail,
   }
 }
 // Assumes lock has already been taken
-inline void add_head(std::atomic<node_base *> &head, node_base *&tail,
+inline void add_head(node_base * &head, node_base *&tail,
                      node_base *node) {
-  if (!head.load()) {
+  if (!head) {
     node->next = nullptr;
     node->previous = nullptr;
     tail = node;
@@ -50,13 +50,13 @@ inline void add_head(std::atomic<node_base *> &head, node_base *&tail,
     assert(tail != nullptr);
     node->next = head;
     node->previous = nullptr;
-    head.load()->previous = node;
+    head->previous = node;
     head = node;
   }
 }
 
 // Assumes lock has already been taken
-inline node_base *remove_helper(std::atomic<node_base *> &head,
+inline node_base *remove_helper(node_base * &head,
                                 node_base *&tail, node_base *node) {
   if (!node) {
     return nullptr;
@@ -85,7 +85,7 @@ template <class T> struct node_t : node_base { T value; };
 
 struct channel_executor {
   using node_base = detail::node_base;
-  std::atomic<node_base *> head{nullptr};
+  node_base * head{nullptr};
   node_base *tail = nullptr;
 
   std::atomic<bool> closed{false};
@@ -120,12 +120,12 @@ struct channel_executor {
 
       lock_t lock{mut};
 
-      auto node = detail::remove_helper(head, tail, head.load());
+      auto node = detail::remove_helper(head, tail, head);
       while (!node) {
         if (closed.load())
           return;
         cvar.wait(lock);
-        node = detail::remove_helper(head, tail, head.load());
+        node = detail::remove_helper(head, tail, head);
       }
 
       lock.unlock();
@@ -201,56 +201,11 @@ template <class T> struct channel {
   using node_t = detail::node_t<T>;
   using node_base = detail::node_base;
   using function_t = detail::channel_function_t;
-  std::atomic<node_base *> read_head{nullptr};
-  node_base *read_tail = nullptr;
-  std::atomic<node_base *> write_head{nullptr};
-  node_base *write_tail = nullptr;
-
-  std::atomic<bool> closed{false};
-  std::mutex mut;
-  using lock_t = std::unique_lock<std::mutex>;
-
-  channel_executor *executor = nullptr;
-
-  detail::fixed_queue<T> queue;
-
-  // 0 = not done, 1 = done, -1 = indeterminate
-  static bool set_done(std::atomic<int> *pdone, int expected, int value) {
-    if (!pdone)
-      return true;
-
-    while (true) {
-      int exp = expected;
-      if (pdone->compare_exchange_strong(exp, value)) {
-        return true;
-      }
-      if (exp == 1) {
-        // somebody else set it to done, we will never succeed
-        return false;
-      }
-      // it is indeterminate - keep looping;
-      assert(exp == -1);
-    }
-  }
-
-  static bool set_intermediate(std::atomic<int> *pdone) {
-    return set_done(pdone, 0, -1);
-  }
-  static bool clear_intermediate_success(std::atomic<int> *pdone) {
-    return set_done(pdone, -1, 1);
-  }
-  static bool clear_intermediate_failure(std::atomic<int> *pdone) {
-    return set_done(pdone, -1, 0);
-  }
-  static bool set_success(std::atomic<int> *pdone) {
-    return set_done(pdone, 0, 1);
-  }
-
   void write(node_t *writer) {
     if (closed) {
       if (set_success(writer->pdone)) {
         writer->closed = true;
-        writer->success = true;
+        writer->success = false;
         executor->add(writer);
       }
     }
@@ -258,10 +213,10 @@ template <class T> struct channel {
     lock_t lock{mut};
 
     auto reader = static_cast<node_t *>(
-        detail::remove_helper(read_head, read_tail, read_head.load()));
+        detail::remove_helper(read_head, read_tail, read_head));
     while (reader && !set_intermediate(reader->pdone)) {
       reader = static_cast<node_t *>(
-          detail::remove_helper(read_head, read_tail, read_head.load()));
+          detail::remove_helper(read_head, read_tail, read_head));
     }
     if (!reader) {
       if (!queue.full()) {
@@ -314,21 +269,21 @@ template <class T> struct channel {
       }
       return;
     }
-    if (closed && write_head.load() == nullptr) {
+    if (closed && write_head == nullptr) {
       lock.unlock();
       if (set_success(reader->pdone)) {
         reader->closed = true;
-        reader->success = true;
+        reader->success = false;
         executor->add(reader);
       }
       return;
     }
 
     auto writer = static_cast<node_t *>(
-        detail::remove_helper(write_head, write_tail, write_head.load()));
+        detail::remove_helper(write_head, write_tail, write_head));
     while (writer && !set_intermediate(writer->pdone)) {
       writer = static_cast<node_t *>(
-          detail::remove_helper(write_head, write_tail, write_head.load()));
+          detail::remove_helper(write_head, write_tail, write_head));
     }
     if (!writer) {
       detail::add(read_head, read_tail, reader);
@@ -371,12 +326,12 @@ template <class T> struct channel {
     closed = true;
     lock_t lock{mut};
 
-    auto writers = write_head.load();
+    auto writers = write_head;
 
     write_head = nullptr;
     write_tail = nullptr;
 
-    auto readers = read_head.load();
+    auto readers = read_head;
 
     read_head = nullptr;
     read_tail = nullptr;
@@ -384,24 +339,24 @@ template <class T> struct channel {
     lock.unlock();
 
     // Clear out all the writers
-    for (auto n = static_cast<node_t *>(writers); n != nullptr;) {
+    for (auto n = writers; n != nullptr;) {
       auto old = n;
-      n = static_cast<node_t *>(n->next);
+      n = n->next;
 
       old->closed = true;
       if (set_success(old->pdone)) {
-        old->success = true;
+        old->success = false;
         executor->add(old);
       }
     }
 
     // Clear out all the readers
-    for (auto n = static_cast<node_t *>(readers); n != nullptr;) {
+    for (auto n = readers; n != nullptr;) {
       auto old = n;
-      n = static_cast<node_t *>(n->next);
+      n = n->next;
       old->closed = true;
       if (set_success(old->pdone)) {
-        old->success = true;
+        old->success = false;
         executor->add(old);
       }
     }
@@ -413,13 +368,61 @@ template <class T> struct channel {
   bool push(T t) {
 
     lock_t lock{mut};
-    if (!queue.full()) {
+    if (!queue.full() && read_head == nullptr) {
       queue.push(std::move(t));
       return true;
     } else {
       return false;
     }
   }
+
+  private:
+  node_base * read_head = nullptr;
+  node_base *read_tail = nullptr;
+  node_base * write_head = nullptr;
+  node_base *write_tail = nullptr;
+
+  std::atomic<bool> closed{false};
+  std::mutex mut;
+  using lock_t = std::unique_lock<std::mutex>;
+
+  channel_executor *executor = nullptr;
+
+  detail::fixed_queue<T> queue;
+
+  // 0 = not done, 1 = done, -1 = indeterminate
+  static bool set_done(std::atomic<int> *pdone, int expected, int value) {
+    if (!pdone)
+      return true;
+
+    while (true) {
+      int exp = expected;
+      if (pdone->compare_exchange_strong(exp, value)) {
+        return true;
+      }
+      if (exp == 1) {
+        // somebody else set it to done, we will never succeed
+        return false;
+      }
+      // it is indeterminate - keep looping;
+      assert(exp == -1);
+    }
+  }
+
+  static bool set_intermediate(std::atomic<int> *pdone) {
+    return set_done(pdone, 0, -1);
+  }
+  static bool clear_intermediate_success(std::atomic<int> *pdone) {
+    return set_done(pdone, -1, 1);
+  }
+  static bool clear_intermediate_failure(std::atomic<int> *pdone) {
+    return set_done(pdone, -1, 0);
+  }
+  static bool set_success(std::atomic<int> *pdone) {
+    return set_done(pdone, 0, 1);
+  }
+
+
 };
 
 namespace detail {
@@ -560,7 +563,7 @@ struct channel_selector {
       c.remove();
       auto ns = c.get_node()->success;
       c.get_node()->success = false;
-      if (ns && !c.get_node()->closed) {
+      if (ns ) {
         using value_type = typename ChannelReader::value_type;
         success = true;
         detail::do_call(f, static_cast<value_type *>(value.value),
@@ -577,7 +580,7 @@ struct channel_selector {
         auto ns = c.get_node()->success;
 
         c.get_node()->success = false;
-        if (ns && !c.get_node()->closed) {
+        if (ns) {
           using ChannelReader = std::decay_t<decltype(c)>;
           using value_type = typename ChannelReader::value_type;
           success = true;
@@ -739,20 +742,6 @@ struct await_channel_writer {
     node.pdone = &s.done;
     ptr->write(&node);
   }
-  // template<class Select, class Context>
-  // bool write(T t, Select& s, Context context) {
-  //	node.value = std::move(t);
-
-  //	node.func = [](void* n) {
-  //		auto node = static_cast<node_t*>(n);
-  //		auto context = Context::get_context(node->data);
-  //		context(node, node->closed);
-  //	};
-
-  //	node.data = &context.f().value();
-  //	node.pdone = &s.done;
-  //	return ptr->write(&node);
-  //}
 
   void remove() { ptr->remove_writer(&node); }
 
@@ -833,7 +822,7 @@ void do_wake(detail::reader_type, This *pthis, Reader r, Func &f) {
   r->remove();
   auto ns = r->get_node()->success;
   r->get_node()->success = false;
-  if (ns && !r->get_node()->closed) {
+  if (ns) {
     do_call(f, &r->get_node()->value, r->get_role());
   }
 }
@@ -842,7 +831,7 @@ void do_wake(detail::writer_type, This *pthis, Reader r, T &&, Func &f) {
   r->remove();
   auto ns = r->get_node()->success;
   r->get_node()->success = false;
-  if (ns && !r->get_node()->closed) {
+  if (ns) {
     do_call(f, &r->get_node()->value, r->get_role());
   }
 }
@@ -853,7 +842,7 @@ void do_wake(detail::reader_type, This *pthis, Reader r, Func &f, R1 r1,
   r->remove();
   auto ns = r->get_node()->success;
   r->get_node()->success = false;
-  if (ns && !r->get_node()->closed) {
+  if (ns) {
     do_call(f, &r->get_node()->value, r->get_role());
   }
   do_wake(r1->get_role(), pthis, r1, std::forward<Rest>(rest)...);
@@ -866,7 +855,7 @@ void do_wake(detail::writer_type, This *pthis, Reader r, T &&, Func &f, R1 r1,
   r->remove();
   auto ns = r->get_node()->success;
   r->get_node()->success = false;
-  if (ns && !r->get_node()->closed) {
+  if (ns) {
     do_call(f, &r->get_node()->value, r->get_role());
   }
   do_wake(r1->get_role(), pthis, r1, std::forward<Rest>(rest)...);
@@ -947,7 +936,7 @@ template <class Range, class Func> auto select_range(Range &r, Func f) {
         iter->remove();
         auto ns = iter->get_node()->success;
         iter->get_node()->success = false;
-        if (ns && !iter->get_node()->closed) {
+        if (ns) {
           detail::do_call(f, &iter->get_node()->value, iter->get_role());
         }
 
