@@ -46,7 +46,7 @@ struct async_result {
 
 template <class F, std::size_t Pos> struct dummy_coroutine_context {
 
-  template <class... T> operation operator()(T &&... t) {return operation::_next;}
+	template <class... T> operation operator()(T &&... t) { return operation::_continue; }
 
   operation do_return() { return operation::_return; };
   operation do_break() { return operation::_break; }
@@ -66,7 +66,7 @@ template <class F, std::size_t Pos> struct dummy_coroutine_context {
   dummy_coroutine_context(dummy_coroutine_context &&) {}
   template <class T> dummy_coroutine_context(T &) {}
 
-  template <class V> static dummy_coroutine_context get_context(V *v){return {};}
+  template <class V> static dummy_coroutine_context get_context(V *v) { return{}; }
 
   enum { position = Pos };
   enum { level = F::level };
@@ -364,10 +364,13 @@ struct finished_wrapper_impl<Level, Value, Tuple, F, Destroyer, true> {
 
     static_assert(
 
-        sizeof(finished_tuple_holder<F, Tuple>) <= sizeof(element_t) &&
-            alignof(finished_tuple_holder<F, Tuple>) <= alignof(element_t),
-        "stackless_coroutine_finished_storage element not large enough or not "
-        "aligned correctly");
+        sizeof(finished_tuple_holder<F, Tuple>) <= sizeof(element_t),
+        "stackless_coroutine_finished_storage element not large enough");
+
+    static_assert(alignof(finished_tuple_holder<F, Tuple>) <=
+                      alignof(element_t),
+                  "stackless_coroutine_finished_storage element not "
+                  "aligned correctly");
     new (&(value_->stackless_coroutine_finished_storage_level[I - 1]))
         finished_tuple_holder<F, Tuple>{std::move(f_temp), t};
   }
@@ -648,7 +651,8 @@ template <class T> struct function_level<make_if_func_t<T>> {
 template <class Value, std::size_t Size, std::size_t LevelSize,
           std::size_t Levels>
 struct value_t : Value {
-  using Value::Value;
+  //  using Value::Value;
+  template <class... T> value_t(T &&... t) : Value{std::forward<T>(t)...} {}
 
   std::aligned_storage_t<Size> stackless_coroutine_finished_storage;
   std::array<std::aligned_storage_t<LevelSize>, Levels>
@@ -658,7 +662,7 @@ struct value_t : Value {
 template <class Value, class Tuple, class FinishedTemp>
 struct coroutine_holder {
 
-  std::unique_ptr<Value> ptr;
+  Value ptr;
   Tuple t;
   FinishedTemp f_temp;
   template <class... A> explicit operator bool() { return ptr.get(); }
@@ -688,8 +692,43 @@ auto make_coroutine(const Tuple *t, FinishedTemp f_temp, A &&... a) {
 
   auto ptr = std::make_unique<v_t>(std::forward<A>(a)...);
 
-  return detail::coroutine_holder<v_t, const Tuple *, FinishedTemp>{
-      std::move(ptr), t, std::move(f_temp)};
+  return detail::coroutine_holder<std::unique_ptr<v_t>, const Tuple *,
+                                  FinishedTemp>{std::move(ptr), t,
+                                                std::move(f_temp)};
+}
+
+namespace detail {
+template <class T> auto get_level_dummy() {
+  struct dummy {
+    T *v;
+  };
+  dummy d;
+  auto dummy_f = [d]() {};
+
+  struct ft {
+    std::decay_t<decltype(dummy_f)> d;
+    std::tuple<> *t;
+  };
+
+  return ft{dummy_f, nullptr};
+}
+}
+
+template <class Variables, std::size_t levels = 5,
+          std::size_t size = 3 * sizeof(void *),
+          std::size_t level_size = sizeof(detail::get_level_dummy<Variables>())>
+using variables_t = detail::value_t<Variables, size, level_size, levels>;
+
+template <class Value, class Tuple, class FinishedTemp>
+auto make_coroutine(Value &variables, const Tuple *t, FinishedTemp f_temp) {
+  struct dummy {
+    Value *v;
+  };
+  dummy d;
+  auto dummy_f = [d]() {};
+
+  return detail::coroutine_holder<Value *, const Tuple *, FinishedTemp>{
+      &variables, t, std::move(f_temp)};
 }
 
 // Generator
@@ -869,4 +908,5 @@ generator<Value> make_generator(Block b, T &&... t) {
       &g, b, std::forward<T>(t)...);
   return g;
 }
+
 }
