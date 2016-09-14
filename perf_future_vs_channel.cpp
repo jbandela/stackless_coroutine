@@ -325,9 +325,43 @@ auto test_channel_stackless_library_select(int count) {
     ;
 }
 
+
+#include <boost/fiber/all.hpp>
+
+
+void fiber_writer(boost::fibers::bounded_channel<int>& chan, int count) {
+	for (int i = 0; i < count; ++i) {
+		chan.push(i);
+	}
+	chan.close();
+}
+
+void fiber_reader(boost::fibers::bounded_channel<int>& chan) {
+	for (;;) {
+		int i;
+		auto v = chan.pop(i);
+		if (v == boost::fibers::channel_op_status::closed) {
+			return;
+		}
+	}
+}
+
+void test_fiber(int count) {
+	boost::fibers::bounded_channel<int> chan{ 1 };
+	boost::fibers::fiber rf{ [&]() {fiber_reader(chan);} };
+	boost::fibers::fiber wf{ [&]() {fiber_writer(chan,count);} };
+
+	rf.join();
+	wf.join();
+
+
+}
+
+
+
 int main() {
 
-  auto count = 10'000;
+  auto count = 1000'000;
   {
     auto start = std::chrono::steady_clock::now();
     test_future(count);
@@ -367,12 +401,24 @@ int main() {
     auto start = std::chrono::steady_clock::now();
     test_channel_stackless_library(count);
     auto end = std::chrono::steady_clock::now();
-    std::cout << "Did " << count << " channel stackless library iterations in "
+    std::cout << "did " << count << " channel stackless library iterations in "
               << std::chrono::duration_cast<std::chrono::duration<double>>(
                      end - start)
                      .count()
               << "\n";
   }
+  {
+
+    auto start = std::chrono::steady_clock::now();
+    test_fiber(count);
+    auto end = std::chrono::steady_clock::now();
+    std::cout << "did " << count << " fiber iterations in "
+              << std::chrono::duration_cast<std::chrono::duration<double>>(
+                     end - start)
+                     .count()
+              << "\n";
+  }
+
 
 #ifdef _MSC_VER
   {
@@ -389,7 +435,8 @@ int main() {
 
 #endif
   {
-
+	  auto outer_count = count;
+	  auto count = outer_count / 100;
     auto start = std::chrono::steady_clock::now();
     test_future_select(count);
     auto end = std::chrono::steady_clock::now();
