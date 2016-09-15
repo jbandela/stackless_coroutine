@@ -8,9 +8,8 @@
 
 namespace detail {
 
-using channel_function_t = void (*)(void *node);
 struct node_base {
-  using function_t = channel_function_t;
+  using function_t = void (*)(node_base *node);
   std::atomic<int> *pdone = nullptr;
   node_base *next = nullptr;
   node_base *previous = nullptr;
@@ -19,6 +18,8 @@ struct node_base {
   bool closed = false;
   bool success = false;
 };
+
+using channel_function_t = void (*)(node_base *node);
 
 // Assumes lock has already been taken
 inline void add(node_base * &head, node_base *&tail,
@@ -56,7 +57,7 @@ inline void add_head(node_base * &head, node_base *&tail,
 }
 
 // Assumes lock has already been taken
-inline node_base *remove_helper(node_base * &head,
+inline node_base *remove(node_base * &head,
                                 node_base *&tail, node_base *node) {
   if (!node) {
     return nullptr;
@@ -120,12 +121,12 @@ struct channel_executor {
 
       lock_t lock{mut};
 
-      auto node = detail::remove_helper(head, tail, head);
+      auto node = detail::remove(head, tail, head);
       while (!node) {
         if (closed.load())
           return;
         cvar.wait(lock);
-        node = detail::remove_helper(head, tail, head);
+        node = detail::remove(head, tail, head);
       }
 
       lock.unlock();
@@ -213,10 +214,10 @@ template <class T> struct channel {
     lock_t lock{mut};
 
     auto reader = static_cast<node_t *>(
-        detail::remove_helper(read_head, read_tail, read_head));
+        detail::remove(read_head, read_tail, read_head));
     while (reader && !set_intermediate(reader->pdone)) {
       reader = static_cast<node_t *>(
-          detail::remove_helper(read_head, read_tail, read_head));
+          detail::remove(read_head, read_tail, read_head));
     }
     if (!reader) {
       if (!queue.full()) {
@@ -280,10 +281,10 @@ template <class T> struct channel {
     }
 
     auto writer = static_cast<node_t *>(
-        detail::remove_helper(write_head, write_tail, write_head));
+        detail::remove(write_head, write_tail, write_head));
     while (writer && !set_intermediate(writer->pdone)) {
       writer = static_cast<node_t *>(
-          detail::remove_helper(write_head, write_tail, write_head));
+          detail::remove(write_head, write_tail, write_head));
     }
     if (!writer) {
       detail::add(read_head, read_tail, reader);
@@ -314,12 +315,12 @@ template <class T> struct channel {
 
   void remove_reader(node_t *reader) {
     lock_t lock{mut};
-    detail::remove_helper(read_head, read_tail, reader);
+    detail::remove(read_head, read_tail, reader);
   }
 
   void remove_writer(node_t *writer) {
     lock_t lock{mut};
-    detail::remove_helper(write_head, write_tail, writer);
+    detail::remove(write_head, write_tail, writer);
   }
 
   void close() {
@@ -448,7 +449,7 @@ struct channel_reader {
   auto get_node() { return &node; }
   template <class Context> void read(Context context) {
 
-    node.func = [](void *n) {
+    node.func = [](detail::node_base *n) {
 
       auto node = static_cast<node_t *>(n);
       auto context = Context::get_context(node->data);
@@ -459,7 +460,7 @@ struct channel_reader {
   }
   template <class Select, class Context> void read(Select &s, Context context) {
 
-    node.func = [](void *n) {
+    node.func = [](detail::node_base *n) {
 
       auto node = static_cast<node_t *>(n);
 
@@ -495,7 +496,7 @@ struct channel_writer {
   template <class Context> void write(T t, Context context) {
     node.value = std::move(t);
 
-    node.func = [](void *n) {
+    node.func = [](detail::node_base *n) {
       auto node = static_cast<node_t *>(n);
 
       auto context = Context::get_context(node->data);
@@ -509,7 +510,7 @@ struct channel_writer {
   void write(Select &s, T t, Context context) {
     node.value = std::move(t);
 
-    node.func = [](void *n) {
+    node.func = [](detail::node_base *n) {
       auto node = static_cast<node_t *>(n);
 
       auto context = Context::get_context(node->data);
@@ -634,7 +635,7 @@ struct await_channel_reader {
       bool await_ready() { return false; }
       void await_suspend(std::experimental::coroutine_handle<> rh) {
         auto &node = pthis->node;
-        node.func = [](void *n) {
+        node.func = [](detail::node_base *n) {
           auto node = static_cast<node_t *>(n);
 
           auto rh =
@@ -646,12 +647,8 @@ struct await_channel_reader {
         pthis->ptr->read(&pthis->node);
       }
       auto await_resume() {
-        if (pthis) {
           return std::make_pair(!pthis->node.closed,
                                 std::move(pthis->node.value));
-        } else {
-          return std::make_pair(false, std::move(pthis->node.value));
-        }
       }
     };
     return awaiter{this};
@@ -659,7 +656,7 @@ struct await_channel_reader {
   template <class Select, class Awaiter>
   void read(Select &s, std::experimental::coroutine_handle<> rh, Awaiter &a) {
     a.prh = rh.to_address();
-    node.func = [](void *n) {
+    node.func = [](detail::node_base *n) {
       auto node = static_cast<node_t *>(n);
 
       auto pa = static_cast<Awaiter *>(node->data);
@@ -700,23 +697,17 @@ struct await_channel_writer {
 
       bool await_ready() { return false; }
       void await_suspend(std::experimental::coroutine_handle<> rh) {
-        pthis->node.func = [](void *n) {
+        pthis->node.func = [](detail::node_base *n) {
           auto node = static_cast<node_t *>(n);
-
           auto rh =
               std::experimental::coroutine_handle<>::from_address(node->data);
           rh();
         };
         pthis->node.data = rh.to_address();
-        ;
         pthis->ptr->write(&pthis->node);
       }
       auto await_resume() {
-        if (pthis) {
-          return pthis->node.closed;
-        } else {
-          return false;
-        }
+          return !pthis->node.closed;
       }
     };
     return awaiter{this};
@@ -726,7 +717,7 @@ struct await_channel_writer {
              Awaiter &a) {
     node.value = std::move(t);
     a.prh = rh.to_address();
-    node.func = [](void *n) {
+    node.func = [](detail::node_base *n) {
       auto node = static_cast<node_t *>(n);
 
       auto pa = static_cast<Awaiter *>(node->data);

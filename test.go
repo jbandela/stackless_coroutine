@@ -29,13 +29,13 @@ func reader_select(c1 chan int,c2 chan int, done chan struct{}) {
 			case _, ok := <-c1:
 			if ok == false {
 				done <- struct{}{}
-				break
+				return
 			}
 
 			case _, ok := <-c2:
 			if ok == false {
 				done <- struct{}{}
-				break
+				return
 			}
 
 		}

@@ -1324,8 +1324,8 @@ goroutine await_select_mixed(std::shared_ptr<channel<int>> chan1,
 TEST_CASE("mixed await select channel [stackless]") {
   return;
 
-  auto chan1 = std::make_shared<channel<int>>(1);
-  auto chan2 = std::make_shared<channel<int>>(1);
+  auto chan1 = std::make_shared<channel<int>>();
+  auto chan2 = std::make_shared<channel<int>>();
 
   static constexpr int max = 10000;
   int total = 0;

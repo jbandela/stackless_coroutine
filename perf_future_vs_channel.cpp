@@ -336,18 +336,18 @@ void fiber_writer(boost::fibers::bounded_channel<int>& chan, int count) {
 	chan.close();
 }
 
-void fiber_reader(boost::fibers::bounded_channel<int>& chan) {
-	for (;;) {
-		int i;
-		auto v = chan.pop(i);
-		if (v == boost::fibers::channel_op_status::closed) {
-			return;
-		}
-	}
+void fiber_reader(boost::fibers::bounded_channel<int> &chan) {
+  for (;;) {
+    int i;
+    auto v = chan.pop(i);
+    if (v == boost::fibers::channel_op_status::closed) {
+      return;
+    }
+  }
 }
 
 void test_fiber(int count) {
-	boost::fibers::bounded_channel<int> chan{ 1 };
+	boost::fibers::bounded_channel<int> chan{1};
 	boost::fibers::fiber rf{ [&]() {fiber_reader(chan);} };
 	boost::fibers::fiber wf{ [&]() {fiber_writer(chan,count);} };
 
