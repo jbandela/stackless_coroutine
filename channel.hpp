@@ -456,6 +456,7 @@ struct channel_reader {
       context(node, node->value, node->closed);
     };
     node.data = &context.f().value();
+    node.pdone = nullptr;
     ptr->read(&node);
   }
   template <class Select, class Context> void read(Select &s, Context context) {
@@ -504,6 +505,7 @@ struct channel_writer {
     };
 
     node.data = &context.f().value();
+    node.pdone = nullptr;
     ptr->write(&node);
   }
   template <class Select, class Context>
@@ -643,7 +645,7 @@ struct await_channel_reader {
           rh();
         };
         node.data = rh.to_address();
-        ;
+        node.pdone = nullptr;
         pthis->ptr->read(&pthis->node);
       }
       auto await_resume() {
@@ -704,6 +706,7 @@ struct await_channel_writer {
           rh();
         };
         pthis->node.data = rh.to_address();
+        pthis->node.pdone = nullptr;
         pthis->ptr->write(&pthis->node);
       }
       auto await_resume() {
