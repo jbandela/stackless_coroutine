@@ -598,6 +598,21 @@ struct channel_selector {
     return select_helper{this, channel, value, closed};
   }
 };
+namespace detail {
+	// Apply adapted from http://isocpp.org/files/papers/N3915.pdf
+	template <typename F, typename Tuple, size_t... I>
+	decltype(auto) apply_impl(F &&f, Tuple &&t,
+		std::integer_sequence<size_t, I...>) {
+		using namespace std;
+		return std::forward<F>(f)(get<I>(std::forward<Tuple>(t))...);
+	}
+	template <typename F, typename Tuple> decltype(auto) apply(F &&f, Tuple &&t) {
+		using namespace std;
+		using Indices = make_index_sequence<tuple_size<decay_t<Tuple>>::value>;
+		return apply_impl(std::forward<F>(f), std::forward<Tuple>(t), Indices{});
+	}
+}
+
 
 #ifdef _MSC_VER
 #include <experimental/coroutine>
@@ -738,19 +753,6 @@ struct await_channel_writer {
 };
 
 namespace detail {
-// Apply adapted from http://isocpp.org/files/papers/N3915.pdf
-template <typename F, typename Tuple, size_t... I>
-decltype(auto) apply_impl(F &&f, Tuple &&t,
-                          std::integer_sequence<size_t, I...>) {
-  using namespace std;
-  return std::forward<F>(f)(get<I>(std::forward<Tuple>(t))...);
-}
-template <typename F, typename Tuple> decltype(auto) apply(F &&f, Tuple &&t) {
-  using namespace std;
-  using Indices = make_index_sequence<tuple_size<decay_t<Tuple>>::value>;
-  return apply_impl(std::forward<F>(f), std::forward<Tuple>(t), Indices{});
-}
-
 template <class T> T get_await_select_type(T t) { return t; }
 
 template <class T, class Ptr>
@@ -945,22 +947,22 @@ template <class Range, class Func> auto select_range(Range &r, Func f) {
 
 struct thread_suspender {
   std::mutex mut;
+  std::mutex internal_mut;
   std::condition_variable cvar;
   std::atomic<bool> suspended{false};
 
   void suspend() {
-    std::unique_lock<std::mutex> lock{mut};
+    std::unique_lock<std::mutex> lock{internal_mut};
     suspended = true;
     while (suspended) {
-      cvar.wait(lock);
-    }
+			cvar.wait(lock);
+	}
   }
   void resume() {
-    while (!suspended)
-      ;
-    std::unique_lock<std::mutex> lock{mut};
+	while (!suspended);
+    std::unique_lock<std::mutex> lock{internal_mut};
     suspended = false;
-    cvar.notify_all();
+	cvar.notify_all();
   }
 };
 
@@ -996,6 +998,7 @@ struct sync_channel_reader {
     node.func = [](detail::node_base *n) {
       auto node = static_cast<node_t *>(n);
       auto pthis = static_cast<This *>(node->data);
+	  {std::unique_lock<std::mutex> lock{ pthis->ps->mut };}
       pthis->selected_node = n;
       auto ps = pthis->ps;
       ps->resume();
@@ -1039,12 +1042,15 @@ struct sync_channel_writer {
 
     return !node.closed;
   }
-  template <class Select, class T, class This>
+  template <class Select, class This>
   void write(Select &s, T t, This *pthis) {
     node.value = std::move(t);
     node.func = [](detail::node_base *n) {
       auto node = static_cast<node_t *>(n);
       auto pthis = static_cast<This *>(node->data);
+
+	  {std::unique_lock<std::mutex> lock{ pthis->ps->mut };}
+ 
       pthis->selected_node = n;
       auto ps = pthis->ps;
       ps->resume();
@@ -1169,6 +1175,7 @@ template <class SyncSuspender,class... T> auto sync_select(SyncSuspender &s, T &
   this_t athis;
   athis.ps = &s;
 
+  std::unique_lock<std::mutex> lock{ s.mut };
   detail::apply(
       [&](auto &&r1, auto &&... ts) mutable {
         detail::do_sync_readwrite(r1->get_role(), &athis,
@@ -1177,6 +1184,7 @@ template <class SyncSuspender,class... T> auto sync_select(SyncSuspender &s, T &
       },
       tup);
 
+  lock.unlock();
 
   s.suspend();
   detail::apply(

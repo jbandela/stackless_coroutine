@@ -358,21 +358,22 @@ void test_fiber(int count) {
 }
 
 struct fiber_suspender {
-  boost::fibers::mutex mut;
+  std::mutex mut;
+  boost::fibers::mutex internal_mut;
   boost::fibers::condition_variable cvar;
   std::atomic<bool> suspended{false};
 
   void suspend() {
-    std::unique_lock<boost::fibers::mutex> lock{mut};
+    std::unique_lock<boost::fibers::mutex> lock{internal_mut};
     suspended = true;
     while (suspended) {
       cvar.wait(lock);
     }
   }
   void resume() {
-    while (!suspended)
-      ;
-    std::unique_lock<boost::fibers::mutex> lock{mut};
+
+	while (!suspended);
+    std::unique_lock<boost::fibers::mutex> lock{internal_mut};
     suspended = false;
     cvar.notify_all();
   }
@@ -439,11 +440,11 @@ void thread_reader(std::shared_ptr<channel<int>> &chan) {
 void test_thread_channel(int count) {
 
   auto chan = std::make_shared<channel<int>>();
-	boost::fibers::fiber rf{ [&]() {fiber_reader(chan);} };
-	boost::fibers::fiber wf{ [&]() {fiber_writer(chan,count);} };
+	std::thread rt{ [&]() {thread_reader(chan);} };
+	std::thread wt{ [&]() {thread_writer(chan,count);} };
 
-	rf.join();
-	wf.join();
+	rt.join();
+	wt.join();
 
 
 }
