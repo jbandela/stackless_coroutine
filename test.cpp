@@ -1344,4 +1344,185 @@ TEST_CASE("mixed await select channel [stackless]") {
 
   REQUIRE(total == (max * max + max) / 2);
 }
+
+
+
+TEST_CASE("simple await select sync_channel reader [stackless]") {
+
+	auto chan1 = std::make_shared<channel<int>>();
+	auto chan2 = std::make_shared<channel<int>>();
+
+	static constexpr int max = 10000;
+	int total = 0;
+
+	std::mutex m;
+	std::condition_variable cvar;
+	std::atomic<int> finished{ 0 };
+;
+	await_select_writer(chan1, chan2, max, [&](auto &&...) {
+		++finished;
+		cvar.notify_all();
+	});
+
+	sync_suspender susp;
+	sync_channel_reader<int> reader1{ chan1,susp };
+	sync_channel_reader<int> reader2{ chan2,susp };
+	while (true) {
+		auto lambda = [&](auto &v) { total += v; };
+
+		auto res = sync_select(susp,reader1, lambda, reader2, lambda);
+
+		if (res.first == false) {
+			break;;
+		}
+	}
+
+
+	std::unique_lock<std::mutex> lock{ m };
+	while (finished.load() < 1) {
+		cvar.wait(lock);
+	}
+
+	REQUIRE(total == (max * max + max) / 2);
+}
+
+TEST_CASE("simple await select sync_channel writer [stackless]") {
+
+	auto chan1 = std::make_shared<channel<int>>();
+	auto chan2 = std::make_shared<channel<int>>();
+
+	static constexpr int max = 10000;
+	int total = 0;
+
+	std::mutex m;
+	std::condition_variable cvar;
+	std::atomic<int> finished{ 0 };
+	;
+	await_select_reader(chan1, chan2, total, [&](auto &&...) {
+		++finished;
+		cvar.notify_all();
+	});
+
+	sync_suspender susp;
+	sync_channel_writer<int> writer1{ chan1,susp };
+	sync_channel_writer<int> writer2{ chan2,susp };
+	for (int i = 0; i <= max; ++i) {
+		if (i % 2) {
+			writer1.write(i);
+		}
+		else {
+
+			writer2.write(i);
+		}
+	}
+	chan1->close();
+	chan2->close();
+
+	std::unique_lock<std::mutex> lock{ m };
+	while (finished.load() < 1) {
+		cvar.wait(lock);
+	}
+
+	REQUIRE(total == (max * max + max) / 2);
+}
+
+
 #endif
+
+
+void sync_select_mixed(sync_suspender& s, std::shared_ptr<channel<int>> chan1,
+	std::shared_ptr<channel<int>> chan2, int &ptotal,
+	int max) {
+
+	sync_channel_reader<int> reader1{ chan1,s };
+	sync_channel_reader<int> reader2{ chan2,s };
+	sync_channel_writer<int> writer1{ chan1,s };
+	sync_channel_writer<int> writer2{ chan2,s };
+
+	int count = 0;
+
+	auto lambda = [&](auto &v) { ptotal += v; };
+	while (true) {
+
+		if (count <= max) {
+			auto &writer = *[&]() {
+				if (count % 2) {
+					return &writer1;
+				}
+				else {
+					return &writer2;
+				}
+			}();
+			 sync_select(s,writer, count, [&]() { ++count; }, reader1, lambda,
+				reader2, lambda);
+
+		}
+		else {
+			chan1->close();
+			chan2->close();
+			auto res = sync_select(s,reader1, lambda, reader2, lambda);
+
+			if (res.first == false) {
+				return;
+			}
+		}
+	}
+}
+
+TEST_CASE("mixed await sync_select channel") {
+	return;
+
+	auto chan1 = std::make_shared<channel<int>>();
+	auto chan2 = std::make_shared<channel<int>>();
+
+	static constexpr int max = 10000;
+	int total = 0;
+	sync_suspender s;
+	sync_select_mixed(s,chan1, chan2, total, max);
+
+	REQUIRE(total == (max * max + max) / 2);
+}
+
+void sync_reader(std::shared_ptr<channel<int>> reader_chan, int &ptotal) {
+	sync_suspender s;
+	sync_channel_reader<int> reader{ reader_chan,s };
+	while (true) {
+		auto p = reader.read();
+		if (p.first == false) {
+			return;
+		}
+		ptotal += p.second;
+	}
+}
+void sync_writer(std::shared_ptr<channel<int>> writer_chan, int max) {
+	sync_suspender s;
+	sync_channel_writer<int> writer{ writer_chan, s };
+	for (int i = 0; i <= max; ++i) {
+		writer.write(i);
+	}
+	writer_chan->close();
+}
+
+TEST_CASE("simple sync channel [stackless]") {
+
+	auto chan = std::make_shared<channel<int>>();
+
+	static constexpr int max = 10000;
+	int total = 0;
+
+
+	std::thread rt{ [&]() {
+		sync_reader(chan,total);
+	
+	} };
+	std::thread wt{ [&]() {
+		sync_writer(chan,max);
+	
+	} };
+
+	rt.join();
+	wt.join();
+
+
+	REQUIRE(total == (max * max + max) / 2);
+}

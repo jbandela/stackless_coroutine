@@ -22,8 +22,7 @@ struct node_base {
 using channel_function_t = void (*)(node_base *node);
 
 // Assumes lock has already been taken
-inline void add(node_base * &head, node_base *&tail,
-                node_base *node) {
+inline void add(node_base *&head, node_base *&tail, node_base *node) {
   if (!head) {
     node->next = nullptr;
     node->previous = nullptr;
@@ -39,8 +38,7 @@ inline void add(node_base * &head, node_base *&tail,
   }
 }
 // Assumes lock has already been taken
-inline void add_head(node_base * &head, node_base *&tail,
-                     node_base *node) {
+inline void add_head(node_base *&head, node_base *&tail, node_base *node) {
   if (!head) {
     node->next = nullptr;
     node->previous = nullptr;
@@ -57,8 +55,7 @@ inline void add_head(node_base * &head, node_base *&tail,
 }
 
 // Assumes lock has already been taken
-inline node_base *remove(node_base * &head,
-                                node_base *&tail, node_base *node) {
+inline node_base *remove(node_base *&head, node_base *&tail, node_base *node) {
   if (!node) {
     return nullptr;
   }
@@ -86,7 +83,7 @@ template <class T> struct node_t : node_base { T value; };
 
 struct channel_executor {
   using node_base = detail::node_base;
-  node_base * head{nullptr};
+  node_base *head{nullptr};
   node_base *tail = nullptr;
 
   std::atomic<bool> closed{false};
@@ -192,7 +189,7 @@ private:
 };
 }
 
-channel_executor &get_channel_executor() {
+inline channel_executor &get_channel_executor() {
   static channel_executor e;
   static detail::channel_runner cr{&e};
   return e;
@@ -213,8 +210,8 @@ template <class T> struct channel {
 
     lock_t lock{mut};
 
-    auto reader = static_cast<node_t *>(
-        detail::remove(read_head, read_tail, read_head));
+    auto reader =
+        static_cast<node_t *>(detail::remove(read_head, read_tail, read_head));
     while (reader && !set_intermediate(reader->pdone)) {
       reader = static_cast<node_t *>(
           detail::remove(read_head, read_tail, read_head));
@@ -377,10 +374,10 @@ template <class T> struct channel {
     }
   }
 
-  private:
-  node_base * read_head = nullptr;
+private:
+  node_base *read_head = nullptr;
   node_base *read_tail = nullptr;
-  node_base * write_head = nullptr;
+  node_base *write_head = nullptr;
   node_base *write_tail = nullptr;
 
   std::atomic<bool> closed{false};
@@ -422,8 +419,6 @@ template <class T> struct channel {
   static bool set_success(std::atomic<int> *pdone) {
     return set_done(pdone, 0, 1);
   }
-
-
 };
 
 namespace detail {
@@ -566,7 +561,7 @@ struct channel_selector {
       c.remove();
       auto ns = c.get_node()->success;
       c.get_node()->success = false;
-      if (ns ) {
+      if (ns) {
         using value_type = typename ChannelReader::value_type;
         success = true;
         detail::do_call(f, static_cast<value_type *>(value.value),
@@ -649,8 +644,8 @@ struct await_channel_reader {
         pthis->ptr->read(&pthis->node);
       }
       auto await_resume() {
-          return std::make_pair(!pthis->node.closed,
-                                std::move(pthis->node.value));
+        return std::make_pair(!pthis->node.closed,
+                              std::move(pthis->node.value));
       }
     };
     return awaiter{this};
@@ -709,9 +704,7 @@ struct await_channel_writer {
         pthis->node.pdone = nullptr;
         pthis->ptr->write(&pthis->node);
       }
-      auto await_resume() {
-          return !pthis->node.closed;
-      }
+      auto await_resume() { return !pthis->node.closed; }
     };
     return awaiter{this};
   }
@@ -948,3 +941,248 @@ template <class Range, class Func> auto select_range(Range &r, Func f) {
 }
 
 #endif // _MSC_VER
+#include <condition_variable>
+
+struct sync_suspender {
+  std::mutex mut;
+  std::condition_variable cvar;
+  std::atomic<bool> suspended{false};
+
+  void suspend() {
+    std::unique_lock<std::mutex> lock{mut};
+    suspended = true;
+    while (suspended) {
+      cvar.wait(lock);
+    }
+  }
+  void resume() {
+    while (!suspended)
+      ;
+    std::unique_lock<std::mutex> lock{mut};
+    suspended = false;
+    cvar.notify_all();
+  }
+};
+
+template <class T, class PtrType = std::shared_ptr<channel<T>>>
+struct sync_channel_reader {
+
+  using node_t = typename channel<T>::node_t;
+  node_t node{};
+
+  static auto get_role() { return detail::reader_type{}; }
+
+  using value_type = T;
+  PtrType ptr;
+
+  sync_suspender *psuspender = nullptr;
+
+  auto get_node() const { return &node; }
+  auto get_node() { return &node; }
+  auto read() {
+    node.func = [](detail::node_base *n) {
+      auto node = static_cast<node_t *>(n);
+      auto ps = static_cast<sync_suspender *>(node->data);
+      ps->resume();
+    };
+    node.data = psuspender;
+    node.pdone = nullptr;
+    ptr->read(&node);
+    psuspender->suspend();
+
+    return std::make_pair(!node.closed, std::move(node.value));
+  }
+  template <class Select, class This> void read(Select &s, This *pthis) {
+    node.func = [](detail::node_base *n) {
+      auto node = static_cast<node_t *>(n);
+      auto pthis = static_cast<This *>(node->data);
+      pthis->selected_node = n;
+      auto ps = pthis->ps;
+      ps->resume();
+    };
+    node.data = pthis;
+    node.success = false;
+
+    node.pdone = &s.done;
+    ptr->read(&node);
+  }
+  void remove() { ptr->remove_reader(&node); }
+
+  explicit sync_channel_reader(PtrType p, sync_suspender &s)
+      : ptr{p}, psuspender{&s} {}
+  ~sync_channel_reader() { ptr->remove_reader(&node); }
+};
+template <class T, class PtrType = std::shared_ptr<channel<T>>>
+struct sync_channel_writer {
+
+  static auto get_role() { return detail::writer_type{}; }
+
+  using node_t = typename channel<T>::node_t;
+  node_t node{};
+
+  PtrType ptr;
+
+  sync_suspender *psuspender = nullptr;
+  auto get_node() const { return &node; }
+  auto get_node() { return &node; }
+  auto write(T t) {
+    node.value = std::move(t);
+    node.func = [](detail::node_base *n) {
+      auto node = static_cast<node_t *>(n);
+      auto ps = static_cast<sync_suspender *>(node->data);
+      ps->resume();
+    };
+    node.data = psuspender;
+    node.pdone = nullptr;
+    ptr->write(&node);
+    psuspender->suspend();
+
+    return !node.closed;
+  }
+  template <class Select, class T, class This>
+  void write(Select &s, T t, This *pthis) {
+    node.value = std::move(t);
+    node.func = [](detail::node_base *n) {
+      auto node = static_cast<node_t *>(n);
+      auto pthis = static_cast<This *>(node->data);
+      pthis->selected_node = n;
+      auto ps = pthis->ps;
+      ps->resume();
+    };
+    node.data = pthis;
+    node.success = false;
+    node.pdone = &s.done;
+    ptr->write(&node);
+  }
+
+  void remove() { ptr->remove_writer(&node); }
+
+  explicit sync_channel_writer(PtrType p, sync_suspender &s)
+      : ptr{p}, psuspender{&s} {}
+  ~sync_channel_writer() { ptr->remove_reader(&node); }
+};
+
+namespace detail {
+template <class T> T get_sync_select_type(T t) { return t; }
+
+template <class T, class Ptr>
+sync_channel_reader<T, Ptr> *
+get_sync_select_type(sync_channel_reader<T, Ptr> &t) {
+  return &t;
+}
+template <class T, class Ptr>
+sync_channel_writer<T, Ptr> *
+get_sync_select_type(sync_channel_writer<T, Ptr> &t) {
+  return &t;
+}
+
+template <class... T> auto get_sync_tuple(T &&... t) {
+  return std::make_tuple(get_sync_select_type(t)...);
+}
+
+template <class This, class Reader, class Func>
+void do_sync_readwrite(detail::reader_type, This *pthis, Reader r, Func &f) {
+  r->get_node()->success = false;
+  r->read(pthis->s, pthis);
+}
+template <class This, class Writer, class Func, class T>
+void do_sync_readwrite(detail::writer_type, This *pthis, Writer w, T t,
+                       Func &f) {
+
+  w->get_node()->success = false;
+  w->write(pthis->s, std::move(t), pthis);
+}
+
+template <class This, class Reader, class Func, class R1, class... Rest>
+void do_sync_readwrite(detail::reader_type, This *pthis, Reader r, Func &f,
+                       R1 r1, Rest &&... rest) {
+
+  r->get_node()->success = false;
+  r->read(pthis->s, pthis);
+  do_sync_readwrite(r1->get_role(), pthis, r1, std::forward<Rest>(rest)...);
+}
+template <class This, class Writer, class Func, class R1, class T,
+          class... Rest>
+void do_sync_readwrite(detail::writer_type, This *pthis, Writer w, T t, Func &f,
+                       R1 r1, Rest &&... rest) {
+
+  w->get_node()->success = false;
+  w->write(pthis->s, std::move(t), pthis);
+  do_sync_readwrite(r1->get_role(), pthis, r1, std::forward<Rest>(rest)...);
+}
+
+template <class Reader, class Func>
+void do_sync_wake(detail::reader_type, Reader r, Func &f) {
+  r->remove();
+  auto ns = r->get_node()->success;
+  r->get_node()->success = false;
+  if (ns) {
+    do_call(f, &r->get_node()->value, r->get_role());
+  }
+}
+template <class Reader, class Func, class T>
+void do_sync_wake(detail::writer_type, Reader r, T &&, Func &f) {
+  r->remove();
+  auto ns = r->get_node()->success;
+  r->get_node()->success = false;
+  if (ns) {
+    do_call(f, &r->get_node()->value, r->get_role());
+  }
+}
+
+template <class Reader, class Func, class R1, class... Rest>
+void do_sync_wake(detail::reader_type, Reader r, Func &f, R1 r1,
+                  Rest &&... rest) {
+  r->remove();
+  auto ns = r->get_node()->success;
+  r->get_node()->success = false;
+  if (ns) {
+    do_call(f, &r->get_node()->value, r->get_role());
+  }
+  do_sync_wake(r1->get_role(), r1, std::forward<Rest>(rest)...);
+}
+
+template <class Reader, class Func, class T, class R1, class... Rest>
+void do_sync_wake(detail::writer_type, Reader r, T &&, Func &f, R1 r1,
+                  Rest &&... rest) {
+  r->remove();
+  auto ns = r->get_node()->success;
+  r->get_node()->success = false;
+  if (ns) {
+    do_call(f, &r->get_node()->value, r->get_role());
+  }
+  do_sync_wake(r1->get_role(), r1, std::forward<Rest>(rest)...);
+}
+}
+
+template <class... T> auto sync_select(sync_suspender &s, T &&... t) {
+  auto tup = detail::get_sync_tuple(std::forward<T>(t)...);
+  using Tuple = std::decay_t<decltype(tup)>;
+  std::mutex mut;
+
+  struct this_t {
+    channel_selector s;
+    sync_suspender *ps = nullptr;
+    detail::node_base *selected_node = nullptr;
+  };
+
+  this_t athis;
+  athis.ps = &s;
+
+  detail::apply(
+      [&](auto &&r1, auto &&... ts) mutable {
+        detail::do_sync_readwrite(r1->get_role(), &athis,
+                                  std::forward<decltype(r1)>(r1),
+                                  std::forward<decltype(ts)>(ts)...);
+      },
+      tup);
+
+  s.suspend();
+  detail::apply(
+      [&](auto &&r1, auto &&... ts) {
+        detail::do_sync_wake(r1->get_role(), std::forward<decltype(r1)>(r1),
+                             std::forward<decltype(ts)>(ts)...);
+      },
+      tup);
+  return std::make_pair(!athis.selected_node->closed, athis.selected_node);
+}
