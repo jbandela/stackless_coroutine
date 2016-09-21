@@ -357,6 +357,99 @@ void test_fiber(int count) {
 
 }
 
+struct fiber_suspender {
+  boost::fibers::mutex mut;
+  boost::fibers::condition_variable cvar;
+  std::atomic<bool> suspended{false};
+
+  void suspend() {
+    std::unique_lock<boost::fibers::mutex> lock{mut};
+    suspended = true;
+    while (suspended) {
+      cvar.wait(lock);
+    }
+  }
+  void resume() {
+    while (!suspended)
+      ;
+    std::unique_lock<boost::fibers::mutex> lock{mut};
+    suspended = false;
+    cvar.notify_all();
+  }
+};
+
+
+void fiber_writer(std::shared_ptr<channel<int>>& chan, int count) {
+	fiber_suspender s;
+	sync_channel_writer<int, fiber_suspender> writer{ chan,s };
+
+
+	for (int i = 0; i < count; ++i) {
+		writer.write(i);
+	}
+	chan->close();
+}
+
+void fiber_reader(std::shared_ptr<channel<int>> &chan) {
+	fiber_suspender s;
+	sync_channel_reader<int, fiber_suspender> reader{ chan,s };
+
+
+	for (;;) {
+		auto res = reader.read();
+		if (res.first == false) return;
+	}
+}
+
+void test_fiber_channel(int count) {
+
+  auto chan = std::make_shared<channel<int>>();
+	boost::fibers::fiber rf{ [&]() {fiber_reader(chan);} };
+	boost::fibers::fiber wf{ [&]() {fiber_writer(chan,count);} };
+
+	rf.join();
+	wf.join();
+
+
+}
+
+
+void thread_writer(std::shared_ptr<channel<int>>& chan, int count) {
+	thread_suspender s;
+	sync_channel_writer<int, thread_suspender> writer{ chan,s };
+
+
+	for (int i = 0; i < count; ++i) {
+		writer.write(i);
+	}
+	chan->close();
+}
+
+void thread_reader(std::shared_ptr<channel<int>> &chan) {
+	thread_suspender s;
+	sync_channel_reader<int, thread_suspender> reader{ chan,s };
+
+
+	for (;;) {
+		auto res = reader.read();
+		if (res.first == false) return;
+	}
+}
+
+void test_thread_channel(int count) {
+
+  auto chan = std::make_shared<channel<int>>();
+	boost::fibers::fiber rf{ [&]() {fiber_reader(chan);} };
+	boost::fibers::fiber wf{ [&]() {fiber_writer(chan,count);} };
+
+	rf.join();
+	wf.join();
+
+
+}
+
+
+
 
 
 int main() {
@@ -417,6 +510,31 @@ int main() {
                      end - start)
                      .count()
               << "\n";
+  }
+
+  {
+
+    auto start = std::chrono::steady_clock::now();
+    test_fiber_channel(count);
+    auto end = std::chrono::steady_clock::now();
+    std::cout << "did " << count << " fiber channel iterations in "
+              << std::chrono::duration_cast<std::chrono::duration<double>>(
+                     end - start)
+                     .count()
+              << "\n";
+  }
+
+
+  {
+
+	  auto start = std::chrono::steady_clock::now();
+	  test_thread_channel(count);
+	  auto end = std::chrono::steady_clock::now();
+	  std::cout << "did " << count << " thread channel iterations in "
+		  << std::chrono::duration_cast<std::chrono::duration<double>>(
+			  end - start)
+		  .count()
+		  << "\n";
   }
 
 

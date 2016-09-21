@@ -943,7 +943,7 @@ template <class Range, class Func> auto select_range(Range &r, Func f) {
 #endif // _MSC_VER
 #include <condition_variable>
 
-struct sync_suspender {
+struct thread_suspender {
   std::mutex mut;
   std::condition_variable cvar;
   std::atomic<bool> suspended{false};
@@ -964,7 +964,7 @@ struct sync_suspender {
   }
 };
 
-template <class T, class PtrType = std::shared_ptr<channel<T>>>
+template <class T, class SyncSuspender, class PtrType = std::shared_ptr<channel<T>>>
 struct sync_channel_reader {
 
   using node_t = typename channel<T>::node_t;
@@ -975,14 +975,14 @@ struct sync_channel_reader {
   using value_type = T;
   PtrType ptr;
 
-  sync_suspender *psuspender = nullptr;
+  SyncSuspender *psuspender = nullptr;
 
   auto get_node() const { return &node; }
   auto get_node() { return &node; }
   auto read() {
     node.func = [](detail::node_base *n) {
       auto node = static_cast<node_t *>(n);
-      auto ps = static_cast<sync_suspender *>(node->data);
+      auto ps = static_cast<SyncSuspender *>(node->data);
       ps->resume();
     };
     node.data = psuspender;
@@ -1008,11 +1008,11 @@ struct sync_channel_reader {
   }
   void remove() { ptr->remove_reader(&node); }
 
-  explicit sync_channel_reader(PtrType p, sync_suspender &s)
+  explicit sync_channel_reader(PtrType p, SyncSuspender &s)
       : ptr{p}, psuspender{&s} {}
   ~sync_channel_reader() { ptr->remove_reader(&node); }
 };
-template <class T, class PtrType = std::shared_ptr<channel<T>>>
+template <class T, class SyncSuspender, class PtrType = std::shared_ptr<channel<T>>>
 struct sync_channel_writer {
 
   static auto get_role() { return detail::writer_type{}; }
@@ -1022,14 +1022,14 @@ struct sync_channel_writer {
 
   PtrType ptr;
 
-  sync_suspender *psuspender = nullptr;
+  SyncSuspender *psuspender = nullptr;
   auto get_node() const { return &node; }
   auto get_node() { return &node; }
   auto write(T t) {
     node.value = std::move(t);
     node.func = [](detail::node_base *n) {
       auto node = static_cast<node_t *>(n);
-      auto ps = static_cast<sync_suspender *>(node->data);
+      auto ps = static_cast<SyncSuspender *>(node->data);
       ps->resume();
     };
     node.data = psuspender;
@@ -1057,7 +1057,7 @@ struct sync_channel_writer {
 
   void remove() { ptr->remove_writer(&node); }
 
-  explicit sync_channel_writer(PtrType p, sync_suspender &s)
+  explicit sync_channel_writer(PtrType p, SyncSuspender &s)
       : ptr{p}, psuspender{&s} {}
   ~sync_channel_writer() { ptr->remove_reader(&node); }
 };
@@ -1155,14 +1155,14 @@ void do_sync_wake(detail::writer_type, Reader r, T &&, Func &f, R1 r1,
 }
 }
 
-template <class... T> auto sync_select(sync_suspender &s, T &&... t) {
+template <class SyncSuspender,class... T> auto sync_select(SyncSuspender &s, T &&... t) {
   auto tup = detail::get_sync_tuple(std::forward<T>(t)...);
   using Tuple = std::decay_t<decltype(tup)>;
   std::mutex mut;
 
   struct this_t {
     channel_selector s;
-    sync_suspender *ps = nullptr;
+    SyncSuspender *ps = nullptr;
     detail::node_base *selected_node = nullptr;
   };
 
@@ -1176,6 +1176,7 @@ template <class... T> auto sync_select(sync_suspender &s, T &&... t) {
                                   std::forward<decltype(ts)>(ts)...);
       },
       tup);
+
 
   s.suspend();
   detail::apply(

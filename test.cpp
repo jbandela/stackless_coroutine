@@ -1364,9 +1364,9 @@ TEST_CASE("simple await select sync_channel reader [stackless]") {
 		cvar.notify_all();
 	});
 
-	sync_suspender susp;
-	sync_channel_reader<int> reader1{ chan1,susp };
-	sync_channel_reader<int> reader2{ chan2,susp };
+	thread_suspender susp;
+	sync_channel_reader<int,thread_suspender> reader1{ chan1,susp };
+	sync_channel_reader<int,thread_suspender> reader2{ chan2,susp };
 	while (true) {
 		auto lambda = [&](auto &v) { total += v; };
 
@@ -1403,9 +1403,9 @@ TEST_CASE("simple await select sync_channel writer [stackless]") {
 		cvar.notify_all();
 	});
 
-	sync_suspender susp;
-	sync_channel_writer<int> writer1{ chan1,susp };
-	sync_channel_writer<int> writer2{ chan2,susp };
+	thread_suspender susp;
+	sync_channel_writer<int,thread_suspender> writer1{ chan1,susp };
+	sync_channel_writer<int,thread_suspender> writer2{ chan2,susp };
 	for (int i = 0; i <= max; ++i) {
 		if (i % 2) {
 			writer1.write(i);
@@ -1430,14 +1430,15 @@ TEST_CASE("simple await select sync_channel writer [stackless]") {
 #endif
 
 
-void sync_select_mixed(sync_suspender& s, std::shared_ptr<channel<int>> chan1,
+template<class SyncSuspender>
+void sync_select_mixed(SyncSuspender& s, std::shared_ptr<channel<int>> chan1,
 	std::shared_ptr<channel<int>> chan2, int &ptotal,
 	int max) {
 
-	sync_channel_reader<int> reader1{ chan1,s };
-	sync_channel_reader<int> reader2{ chan2,s };
-	sync_channel_writer<int> writer1{ chan1,s };
-	sync_channel_writer<int> writer2{ chan2,s };
+	sync_channel_reader<int,thread_suspender> reader1{ chan1,s };
+	sync_channel_reader<int,thread_suspender> reader2{ chan2,s };
+	sync_channel_writer<int,thread_suspender> writer1{ chan1,s };
+	sync_channel_writer<int,thread_suspender> writer2{ chan2,s };
 
 	int count = 0;
 
@@ -1477,15 +1478,15 @@ TEST_CASE("mixed await sync_select channel") {
 
 	static constexpr int max = 10000;
 	int total = 0;
-	sync_suspender s;
+	thread_suspender s;
 	sync_select_mixed(s,chan1, chan2, total, max);
 
 	REQUIRE(total == (max * max + max) / 2);
 }
 
 void sync_reader(std::shared_ptr<channel<int>> reader_chan, int &ptotal) {
-	sync_suspender s;
-	sync_channel_reader<int> reader{ reader_chan,s };
+	thread_suspender s;
+	sync_channel_reader<int,thread_suspender> reader{ reader_chan,s };
 	while (true) {
 		auto p = reader.read();
 		if (p.first == false) {
@@ -1495,8 +1496,8 @@ void sync_reader(std::shared_ptr<channel<int>> reader_chan, int &ptotal) {
 	}
 }
 void sync_writer(std::shared_ptr<channel<int>> writer_chan, int max) {
-	sync_suspender s;
-	sync_channel_writer<int> writer{ writer_chan, s };
+	thread_suspender s;
+	sync_channel_writer<int,thread_suspender> writer{ writer_chan, s };
 	for (int i = 0; i <= max; ++i) {
 		writer.write(i);
 	}
