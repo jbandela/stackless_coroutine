@@ -1426,6 +1426,51 @@ TEST_CASE("simple await select sync_channel writer [stackless]") {
 	REQUIRE(total == (max * max + max) / 2);
 }
 
+void sync_select_range_reader(std::shared_ptr<channel<int>> reader_chan1,
+	std::shared_ptr<channel<int>> reader_chan2,
+	int &ptotal) {
+
+	thread_suspender s;
+	std::vector<sync_channel_reader<int,thread_suspender>> vec;
+	vec.emplace_back(reader_chan1,s);
+	vec.emplace_back(reader_chan2,s);
+	while (true) {
+		auto lambda = [&](auto &v) { ptotal += v; };
+
+		auto res = sync_select_range(s,vec, lambda);
+
+		if (res.first == false) {
+			return;
+		}
+	}
+}
+
+
+TEST_CASE("simple await sync_select range channel [stackless]") {
+
+	auto chan1 = std::make_shared<channel<int>>();
+	auto chan2 = std::make_shared<channel<int>>();
+
+	static constexpr int max = 10000;
+	int total = 0;
+
+	std::mutex m;
+	std::condition_variable cvar;
+	std::atomic<int> finished{ 0 };
+await_select_writer(chan1, chan2, max, [&](auto &&...) {
+		++finished;
+		cvar.notify_all();
+	});
+sync_select_range_reader(chan1, chan2, total);
+
+	std::unique_lock<std::mutex> lock{ m };
+	while (finished.load() < 1) {
+		cvar.wait(lock);
+	}
+
+	REQUIRE(total == (max * max + max) / 2);
+}
+
 
 #endif
 
