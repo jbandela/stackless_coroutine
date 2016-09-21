@@ -1,10 +1,12 @@
 #pragma once
 
+#include <assert.h>
 #include <atomic>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 namespace detail {
 
@@ -156,12 +158,17 @@ struct channel_runner {
 
   channel_runner(channel_executor *e) : executor{e}, rt{[e]() { e->run(); }} {}
 
+  channel_runner(channel_runner && other) :executor{ other.executor }, rt{ std::move(other.rt) } {}
   ~channel_runner() {
-    executor->close();
-    rt.join();
+	if (rt.joinable()) {
+		executor->close();
+		rt.join();
+	}
   }
 };
 }
+
+using detail::channel_runner;
 
 namespace detail {
 
@@ -206,6 +213,7 @@ template <class T> struct channel {
         writer->success = false;
         executor->add(writer);
       }
+      return;
     }
 
     lock_t lock{mut};
@@ -321,6 +329,8 @@ template <class T> struct channel {
   }
 
   void close() {
+    if (closed)
+      return;
     closed = true;
     lock_t lock{mut};
 
@@ -599,20 +609,19 @@ struct channel_selector {
   }
 };
 namespace detail {
-	// Apply adapted from http://isocpp.org/files/papers/N3915.pdf
-	template <typename F, typename Tuple, size_t... I>
-	decltype(auto) apply_impl(F &&f, Tuple &&t,
-		std::integer_sequence<size_t, I...>) {
-		using namespace std;
-		return std::forward<F>(f)(get<I>(std::forward<Tuple>(t))...);
-	}
-	template <typename F, typename Tuple> decltype(auto) apply(F &&f, Tuple &&t) {
-		using namespace std;
-		using Indices = make_index_sequence<tuple_size<decay_t<Tuple>>::value>;
-		return apply_impl(std::forward<F>(f), std::forward<Tuple>(t), Indices{});
-	}
+// Apply adapted from http://isocpp.org/files/papers/N3915.pdf
+template <typename F, typename Tuple, size_t... I>
+decltype(auto) apply_impl(F &&f, Tuple &&t,
+                          std::integer_sequence<size_t, I...>) {
+  using namespace std;
+  return std::forward<F>(f)(get<I>(std::forward<Tuple>(t))...);
 }
-
+template <typename F, typename Tuple> decltype(auto) apply(F &&f, Tuple &&t) {
+  using namespace std;
+  using Indices = make_index_sequence<tuple_size<decay_t<Tuple>>::value>;
+  return apply_impl(std::forward<F>(f), std::forward<Tuple>(t), Indices{});
+}
+}
 
 #ifdef _MSC_VER
 #include <experimental/coroutine>
@@ -955,18 +964,20 @@ struct thread_suspender {
     std::unique_lock<std::mutex> lock{internal_mut};
     suspended = true;
     while (suspended) {
-			cvar.wait(lock);
-	}
+      cvar.wait(lock);
+    }
   }
   void resume() {
-	while (!suspended);
+    while (!suspended)
+      ;
     std::unique_lock<std::mutex> lock{internal_mut};
     suspended = false;
-	cvar.notify_all();
+    cvar.notify_all();
   }
 };
 
-template <class T, class SyncSuspender, class PtrType = std::shared_ptr<channel<T>>>
+template <class T, class SyncSuspender,
+          class PtrType = std::shared_ptr<channel<T>>>
 struct sync_channel_reader {
 
   using node_t = typename channel<T>::node_t;
@@ -998,7 +1009,7 @@ struct sync_channel_reader {
     node.func = [](detail::node_base *n) {
       auto node = static_cast<node_t *>(n);
       auto pthis = static_cast<This *>(node->data);
-	  {std::unique_lock<std::mutex> lock{ pthis->ps->mut };}
+      { std::unique_lock<std::mutex> lock{pthis->ps->mut}; }
       pthis->selected_node = n;
       auto ps = pthis->ps;
       ps->resume();
@@ -1015,7 +1026,8 @@ struct sync_channel_reader {
       : ptr{p}, psuspender{&s} {}
   ~sync_channel_reader() { ptr->remove_reader(&node); }
 };
-template <class T, class SyncSuspender, class PtrType = std::shared_ptr<channel<T>>>
+template <class T, class SyncSuspender,
+          class PtrType = std::shared_ptr<channel<T>>>
 struct sync_channel_writer {
 
   static auto get_role() { return detail::writer_type{}; }
@@ -1042,15 +1054,14 @@ struct sync_channel_writer {
 
     return !node.closed;
   }
-  template <class Select, class This>
-  void write(Select &s, T t, This *pthis) {
+  template <class Select, class This> void write(Select &s, T t, This *pthis) {
     node.value = std::move(t);
     node.func = [](detail::node_base *n) {
       auto node = static_cast<node_t *>(n);
       auto pthis = static_cast<This *>(node->data);
 
-	  {std::unique_lock<std::mutex> lock{ pthis->ps->mut };}
- 
+      { std::unique_lock<std::mutex> lock{pthis->ps->mut}; }
+
       pthis->selected_node = n;
       auto ps = pthis->ps;
       ps->resume();
@@ -1161,7 +1172,8 @@ void do_sync_wake(detail::writer_type, Reader r, T &&, Func &f, R1 r1,
 }
 }
 
-template <class SyncSuspender,class... T> auto sync_select(SyncSuspender &s, T &&... t) {
+template <class SyncSuspender, class... T>
+auto sync_select(SyncSuspender &s, T &&... t) {
   auto tup = detail::get_sync_tuple(std::forward<T>(t)...);
   using Tuple = std::decay_t<decltype(tup)>;
   std::mutex mut;
@@ -1175,7 +1187,7 @@ template <class SyncSuspender,class... T> auto sync_select(SyncSuspender &s, T &
   this_t athis;
   athis.ps = &s;
 
-  std::unique_lock<std::mutex> lock{ s.mut };
+  std::unique_lock<std::mutex> lock{s.mut};
   detail::apply(
       [&](auto &&r1, auto &&... ts) mutable {
         detail::do_sync_readwrite(r1->get_role(), &athis,
@@ -1194,4 +1206,43 @@ template <class SyncSuspender,class... T> auto sync_select(SyncSuspender &s, T &
       },
       tup);
   return std::make_pair(!athis.selected_node->closed, athis.selected_node);
+}
+template <class SyncSuspender, class Range, class Func>
+auto sync_select_range(SyncSuspender &s, Range &rng, Func f) {
+  using std::begin;
+  using Iter = decltype(begin(rng));
+
+  struct this_t {
+    channel_selector s;
+    SyncSuspender *ps = nullptr;
+    detail::node_base *selected_node = nullptr;
+  };
+
+  this_t athis;
+  athis.ps = &s;
+  std::unique_lock<std::mutex> lock{s.mut};
+  for (auto &r : rng) {
+    detail::do_sync_readwrite(r.get_role(), &athis, &r, f);
+  }
+  lock.unlock();
+  s.suspend();
+  using std::begin;
+  using std::end;
+  auto iter = begin(rng);
+  auto selected_iter = end(rng);
+  for (; iter != end(rng); ++iter) {
+    iter->remove();
+    auto ns = iter->get_node()->success;
+    iter->get_node()->success = false;
+    if (ns) {
+      detail::do_call(f, &iter->get_node()->value, iter->get_role());
+    }
+
+    if (iter->get_node() == athis.selected_node) {
+      selected_iter = iter;
+    }
+  }
+  assert(selected_iter != end(rng));
+
+  return std::make_pair(!athis.selected_node->closed, selected_iter);
 }
