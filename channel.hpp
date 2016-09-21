@@ -152,11 +152,16 @@ struct channel_executor {
 };
 
 namespace detail {
+	inline channel_executor &get_channel_executor_raw() {
+		static channel_executor e;
+		return e;
+	}
+
 struct channel_runner {
   channel_executor *executor = nullptr;
   std::thread rt;
 
-  channel_runner(channel_executor *e) : executor{e}, rt{[e]() { e->run(); }} {}
+  explicit channel_runner(channel_executor *e = &get_channel_executor_raw() ) : executor{e}, rt{[e]() { e->run(); }} {}
 
   channel_runner(channel_runner && other) :executor{ other.executor }, rt{ std::move(other.rt) } {}
   ~channel_runner() {
@@ -197,9 +202,8 @@ private:
 }
 
 inline channel_executor &get_channel_executor() {
-  static channel_executor e;
-  static detail::channel_runner cr{&e};
-  return e;
+  static detail::channel_runner cr{&detail::get_channel_executor_raw()};
+  return detail::get_channel_executor_raw();
 }
 
 template <class T> struct channel {
