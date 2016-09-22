@@ -19,26 +19,25 @@ goroutine reader(std::shared_ptr<channel<ordered_payload_type>> chan,
   }
   chan->close();
 }
+goroutine processor (std::shared_ptr<channel<ordered_payload_type>> inchan,
+	std::shared_ptr<channel<ordered_payload_type>> outchan) {
+	await_channel_reader<ordered_payload_type> reader{ inchan };
+	await_channel_writer<ordered_payload_type> writer{ outchan };
+	auto out_array = std::make_unique<array_type>();
+	for (;;) {
+		auto res = co_await reader.read();
+		if (res.first == false) {
+			outchan->close();
+			return;
+		}
+		// Do something with res.second.second and out_array
+		std::this_thread::sleep_for(std::chrono::seconds{ 1 });
+		co_await writer.write({ res.second.first, std::move(out_array) });
+		out_array = std::move(res.second.second);
+	}
+};
 
 auto make_processor(std::shared_ptr<channel<ordered_payload_type>> inchan) {
-  auto processor =
-      [](std::shared_ptr<channel<ordered_payload_type>> inchan,
-         std::shared_ptr<channel<ordered_payload_type>> outchan) -> goroutine {
-    await_channel_reader<ordered_payload_type> reader{inchan};
-    await_channel_writer<ordered_payload_type> writer{outchan};
-	auto out_array = std::make_unique<array_type>();
-    for (;;) {
-      auto res = co_await reader.read();
-      if (res.first == false) {
-        outchan->close();
-        return;
-      }
-	  // Do something with res.second.second and out_array
-      std::this_thread::sleep_for(std::chrono::seconds{1});
-      co_await writer.write({res.second.first, std::move(out_array)});
-	  out_array = std::move(res.second.second);
-    }
-  };
   auto outchan = std::make_shared<channel<ordered_payload_type>>();
   processor(inchan, outchan);
   return outchan;
