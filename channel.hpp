@@ -80,7 +80,16 @@ inline node_base *remove(node_base *&head, node_base *&tail, node_base *node) {
   return node;
 }
 
-template <class T> struct node_t : node_base { T value; };
+template <class T> struct node_t : node_base {
+  T value;
+
+  node_t(const node_t &) = delete;
+  node_t &operator=(const node_t &) = delete;
+  node_t(node_t &&) = default;
+  node_t &operator=(node_t &&) = default;
+
+  node_t() {}
+};
 }
 
 struct channel_executor {
@@ -152,23 +161,25 @@ struct channel_executor {
 };
 
 namespace detail {
-	inline channel_executor &get_channel_executor_raw() {
-		static channel_executor e;
-		return e;
-	}
+inline channel_executor &get_channel_executor_raw() {
+  static channel_executor e;
+  return e;
+}
 
 struct channel_runner {
   channel_executor *executor = nullptr;
   std::thread rt;
 
-  explicit channel_runner(channel_executor *e = &get_channel_executor_raw() ) : executor{e}, rt{[e]() { e->run(); }} {}
+  explicit channel_runner(channel_executor *e = &get_channel_executor_raw())
+      : executor{e}, rt{[e]() { e->run(); }} {}
 
-  channel_runner(channel_runner && other) :executor{ other.executor }, rt{ std::move(other.rt) } {}
+  channel_runner(channel_runner &&other)
+      : executor{other.executor}, rt{std::move(other.rt)} {}
   ~channel_runner() {
-	if (rt.joinable()) {
-		executor->close();
-		rt.join();
-	}
+    if (rt.joinable()) {
+      executor->close();
+      rt.join();
+    }
   }
 };
 }
@@ -487,7 +498,15 @@ struct channel_reader {
   void close() { ptr->close(); }
 
   explicit channel_reader(PtrType p) : ptr{p} {}
-  ~channel_reader() { ptr->remove_reader(&node); }
+  ~channel_reader() {
+    if (ptr)
+      ptr->remove_reader(&node);
+  }
+
+  channel_reader(const channel_reader &) = delete;
+  channel_reader &operator=(const channel_reader &) = delete;
+  channel_reader(channel_reader &&) = default;
+  channel_reader &operator=(channel_reader &&) = default;
 
 private:
   PtrType ptr;
@@ -540,7 +559,16 @@ struct channel_writer {
 
   void close() { ptr->close(); }
 
-  ~channel_writer() { ptr->remove_writer(&node); }
+  ~channel_writer() {
+    if (ptr)
+      ptr->remove_writer(&node);
+  }
+
+  channel_writer(const channel_writer &) = delete;
+  channel_writer &operator=(const channel_writer &) = delete;
+
+  channel_writer(channel_writer &&) = default;
+  channel_writer &operator=(channel_writer &&) = default;
 
 private:
   PtrType ptr;
@@ -700,7 +728,16 @@ struct await_channel_reader {
   void remove() { ptr->remove_reader(&node); }
 
   explicit await_channel_reader(PtrType p) : ptr{p} {}
-  ~await_channel_reader() { ptr->remove_reader(&node); }
+  ~await_channel_reader() {
+    if (ptr)
+      ptr->remove_reader(&node);
+  }
+
+  await_channel_reader(const await_channel_reader &) = delete;
+  await_channel_reader &operator=(const await_channel_reader &) = delete;
+
+  await_channel_reader(await_channel_reader &&) = default;
+  await_channel_reader &operator=(await_channel_reader &&) = default;
 };
 
 template <class T, class PtrType = std::shared_ptr<channel<T>>>
@@ -762,7 +799,15 @@ struct await_channel_writer {
 
   explicit await_channel_writer(PtrType p) : ptr{p} {}
 
-  ~await_channel_writer() { ptr->remove_writer(&node); }
+  ~await_channel_writer() {
+    if (ptr)
+      ptr->remove_writer(&node);
+  }
+
+  await_channel_writer(const await_channel_writer &) = delete;
+  await_channel_writer &operator=(const await_channel_writer &) = delete;
+  await_channel_writer(await_channel_writer &&) = default;
+  await_channel_writer &operator=(await_channel_writer &&) = default;
 };
 
 namespace detail {
@@ -1024,11 +1069,22 @@ struct sync_channel_reader {
     node.pdone = &s.done;
     ptr->read(&node);
   }
-  void remove() { ptr->remove_reader(&node); }
+  void remove() {
+    if (ptr)
+      ptr->remove_reader(&node);
+  }
 
   explicit sync_channel_reader(PtrType p, SyncSuspender &s)
       : ptr{p}, psuspender{&s} {}
-  ~sync_channel_reader() { ptr->remove_reader(&node); }
+  ~sync_channel_reader() {
+    if (ptr)
+      ptr->remove_reader(&node);
+  }
+
+  sync_channel_reader(const sync_channel_reader &) = delete;
+  sync_channel_reader &operator=(const sync_channel_reader &) = delete;
+  sync_channel_reader(sync_channel_reader &&) = default;
+  sync_channel_reader &operator=(sync_channel_reader &&) = default;
 };
 template <class T, class SyncSuspender,
           class PtrType = std::shared_ptr<channel<T>>>
@@ -1080,7 +1136,15 @@ struct sync_channel_writer {
 
   explicit sync_channel_writer(PtrType p, SyncSuspender &s)
       : ptr{p}, psuspender{&s} {}
-  ~sync_channel_writer() { ptr->remove_reader(&node); }
+  ~sync_channel_writer() {
+    if (ptr)
+      ptr->remove_reader(&node);
+  }
+
+  sync_channel_writer(const sync_channel_writer &) = delete;
+  sync_channel_writer &operator=(const sync_channel_writer &) = delete;
+  sync_channel_writer(sync_channel_writer &&) = default;
+  sync_channel_writer &operator=(sync_channel_writer &&) = default;
 };
 
 namespace detail {
