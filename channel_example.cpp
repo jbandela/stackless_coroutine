@@ -2,6 +2,7 @@
 #include <array>
 #include <future>
 #include <iostream>
+#include <chrono>
 
 using array_type = std::array<char, 32 * 1024 * 1024>;
 using payload_type = std::unique_ptr<array_type>;
@@ -75,9 +76,6 @@ goroutine writer(std::vector<std::shared_ptr<channel<pout_type>>> inchans,
     }
   }
 }
-
-#include <chrono>
-#include <list>
 
 int main() {
   int threads;
