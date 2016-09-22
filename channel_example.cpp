@@ -6,50 +6,54 @@
 
 using array_type = std::array<char, 32 * 1024 * 1024>;
 using payload_type = std::unique_ptr<array_type>;
-using pout_type = std::pair<int, payload_type>;
+using ordered_payload_type = std::pair<int, payload_type>;
 
-goroutine reader(std::shared_ptr<channel<pout_type>> chan,
+goroutine reader(std::shared_ptr<channel<ordered_payload_type>> chan,
                  std::shared_ptr<channel<payload_type>> pool, int count) {
-  await_channel_writer<pout_type> writer{chan};
+  await_channel_writer<ordered_payload_type> writer{chan};
   await_channel_reader<payload_type> pool_reader{pool};
   for (int i = 0; i < count; ++i) {
     auto res = co_await pool_reader.read();
+	// Read data into res.second
     co_await writer.write({i, std::move(res.second)});
   }
   chan->close();
 }
 
-auto make_processor(std::shared_ptr<channel<pout_type>> inchan) {
+auto make_processor(std::shared_ptr<channel<ordered_payload_type>> inchan) {
   auto processor =
-      [](std::shared_ptr<channel<pout_type>> inchan,
-         std::shared_ptr<channel<pout_type>> outchan) -> goroutine {
-    await_channel_reader<pout_type> reader{inchan};
-    await_channel_writer<pout_type> writer{outchan};
+      [](std::shared_ptr<channel<ordered_payload_type>> inchan,
+         std::shared_ptr<channel<ordered_payload_type>> outchan) -> goroutine {
+    await_channel_reader<ordered_payload_type> reader{inchan};
+    await_channel_writer<ordered_payload_type> writer{outchan};
+	auto out_array = std::make_unique<array_type>();
     for (;;) {
       auto res = co_await reader.read();
       if (res.first == false) {
         outchan->close();
         return;
       }
+	  // Do something with res.second.second and out_array
       std::this_thread::sleep_for(std::chrono::seconds{1});
-      co_await writer.write({res.second.first, std::move(res.second.second)});
+      co_await writer.write({res.second.first, std::move(out_array)});
+	  out_array = std::move(res.second.second);
     }
   };
-  auto outchan = std::make_shared<channel<pout_type>>();
+  auto outchan = std::make_shared<channel<ordered_payload_type>>();
   processor(inchan, outchan);
   return outchan;
 }
 
-goroutine writer(std::vector<std::shared_ptr<channel<pout_type>>> inchans,
+goroutine writer(std::vector<std::shared_ptr<channel<ordered_payload_type>>> inchans,
                  std::shared_ptr<channel<payload_type>> pool,
                  std::shared_ptr<channel<bool>> done_chan) {
   await_channel_writer<bool> done_writer{done_chan};
-  std::vector<await_channel_reader<pout_type>> readers{inchans.begin(),
+  std::vector<await_channel_reader<ordered_payload_type>> readers{inchans.begin(),
                                                        inchans.end()};
 
   await_channel_writer<payload_type> pool_writer{pool};
 
-  std::vector<pout_type> buffer;
+  std::vector<ordered_payload_type> buffer;
   buffer.reserve(readers.size());
   int current = 0;
   for (;;) {
@@ -66,7 +70,8 @@ goroutine writer(std::vector<std::shared_ptr<channel<pout_type>>> inchans,
       readers.erase(res.second);
     }
 
-    if (!buffer.empty() && buffer.front().first == current) {
+    while (!buffer.empty() && buffer.front().first == current) {
+	  // Write data in buffer.front().second to output
       std::cout << buffer.front().first << "\n";
       ++current;
       std::pop_heap(buffer.begin(), buffer.end(),
@@ -89,18 +94,18 @@ int main() {
 
   auto start = std::chrono::steady_clock::now();
 
-  auto inchan = std::make_shared<channel<pout_type>>();
+  auto inchan = std::make_shared<channel<ordered_payload_type>>();
   auto pool = std::make_shared<channel<payload_type>>(threads);
   auto done_chan = std::make_shared<channel<bool>>();
 
   reader(inchan, pool, count);
 
-  std::vector<std::shared_ptr<channel<pout_type>>> pout_chans;
+  std::vector<std::shared_ptr<channel<ordered_payload_type>>> ordered_payload_chans;
   for (int i = 0; i < threads; ++i) {
-    pout_chans.push_back(make_processor(inchan));
+    ordered_payload_chans.push_back(make_processor(inchan));
   }
 
-  writer(pout_chans, pool, done_chan);
+  writer(std::move(ordered_payload_chans), pool, done_chan);
 
   thread_suspender sus;
   sync_channel_reader<bool, thread_suspender> done_reader{done_chan, sus};
