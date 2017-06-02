@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.0)
 set(Boost_USE_STATIC_LIBS ON)
-find_package(Boost 1.60 REQUIRED COMPONENTS coroutine context thread system )
+find_package(Boost 1.62 REQUIRED COMPONENTS coroutine context thread system fiber )
 include_directories(${Boost_INCLUDE_DIRS})
 find_package(Threads)
 add_executable(unit_test test.cpp test2.cpp)
@@ -33,4 +33,8 @@ target_link_libraries(stackfull_coroutines_perf ${Boost_LIBRARIES} ${CMAKE_THREA
 add_executable(stackless_coroutines_perf stackless_coroutines_perf.cpp)
 set_property(TARGET stackless_coroutines_perf PROPERTY CXX_STANDARD 14)
 target_link_libraries(stackless_coroutines_perf ${Boost_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+
+add_executable(perf_future_vs_channel perf_future_vs_channel.cpp)
+set_property(TARGET perf_future_vs_channel PROPERTY CXX_STANDARD 14)
+target_link_libraries(perf_future_vs_channel ${Boost_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
 
