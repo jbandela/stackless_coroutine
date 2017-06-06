@@ -1,4 +1,5 @@
 // Copyright 2016 John R. Bandela
+// Copyright 2017 Google Inc.
 // Distributed under the Boost Software License, Version 1.0.
 //    (See accompanying file LICENSE_1_0.txt or copy at
 //          http://www.boost.org/LICENSE_1_0.txt)
@@ -38,7 +39,7 @@ template <class V, class T> auto get_future(T t) {
           value.p.set_value(value.return_value);
         }
       });
-  auto fut = co.ptr->p.get_future();
+  auto fut = co.variables->p.get_future();
   co();
   return fut;
 }
@@ -49,21 +50,20 @@ TEST_CASE("while if async", "[stackless]") {
       stackless_coroutine::make_while_true(
           stackless_coroutine::make_if(
               [](auto &value) { return value.return_value < 5; },
-              stackless_coroutine::make_block(
+              std::make_tuple(
                   [](auto &context, auto &value) { return context.do_next(); }),
-              stackless_coroutine::make_block([](auto &context, auto &value) {
+              std::make_tuple([](auto &context, auto &value) {
                 return context.do_break();
               })),
-          [](auto &context, auto &value) {
+          [](auto context, auto &value) {
             do_thread([context]() mutable { context(1); });
             return context.do_async();
           },
-          [](auto &context, auto &value, int aval) {
+          [](auto context, auto &value, int aval) {
             value.return_value += aval;
           })));
   REQUIRE(f.get() == 5);
 }
-
 TEST_CASE("Simple test while", "[stackless]") {
   auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
       [](auto &context, auto &value) { value.return_value = 1; },
@@ -75,7 +75,6 @@ TEST_CASE("Simple test while", "[stackless]") {
           ));
   REQUIRE(f.get() == 2);
 }
-
 TEST_CASE("Simple test if while", "[stackless]") {
   auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
       [](auto &context, auto &value) { value.return_value = 1; },
@@ -86,11 +85,11 @@ TEST_CASE("Simple test if while", "[stackless]") {
           },
           stackless_coroutine::make_if(
               [](auto &value) { return value.return_value == 1; },
-              stackless_coroutine::make_block([](auto &context, auto &value) {
+              std::make_tuple([](auto &context, auto &value) {
                 value.return_value = 2;
                 return context.do_return();
               }),
-              stackless_coroutine::make_block([](auto &context, auto &value) {
+              std::make_tuple([](auto &context, auto &value) {
                 value.return_value = 3;
                 return context.do_return();
               })))
@@ -99,22 +98,24 @@ TEST_CASE("Simple test if while", "[stackless]") {
   REQUIRE(f.get() == 2);
 }
 
+
 TEST_CASE("Simple test", "[stackless]") {
   auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
       [](auto &context, auto &value) { value.return_value = 1; }));
   REQUIRE(f.get() == 1);
 }
+
 TEST_CASE("Simple test if", "[stackless]") {
   auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
       [](auto &context, auto &value) { value.return_value = 1; },
 
       stackless_coroutine::make_if(
           [](auto &value) { return value.return_value == 1; },
-          stackless_coroutine::make_block([](auto &context, auto &value) {
+          std::make_tuple([](auto &context, auto &value) {
             value.return_value = 2;
             return context.do_return();
           }),
-          stackless_coroutine::make_block([](auto &context, auto &value) {
+          std::make_tuple([](auto &context, auto &value) {
             value.return_value = 3;
             return context.do_return();
           }))
@@ -122,7 +123,6 @@ TEST_CASE("Simple test if", "[stackless]") {
           ));
   REQUIRE(f.get() == 2);
 }
-
 TEST_CASE("Simple async", "[stackless]") {
   auto f = get_future<value_t<int>>(stackless_coroutine::make_block(
       [](auto &context, auto &value) {
@@ -180,6 +180,7 @@ TEST_CASE("while async get_context", "[stackless]") {
   REQUIRE(f.get() == 5);
 }
 
+
 template <class R> struct value_temp_t {
   R return_value;
   R inner;
@@ -197,9 +198,9 @@ TEST_CASE("inner and outer while if async", "[stackless]") {
       stackless_coroutine::make_while_true(
           stackless_coroutine::make_if(
               [](auto &value) { return value.outer < 5; },
-              stackless_coroutine::make_block(
+              std::make_tuple(
                   [](auto &context, auto &value) { return context.do_next(); }),
-              stackless_coroutine::make_block([](auto &context, auto &value) {
+              std::make_tuple([](auto &context, auto &value) {
                 return context.do_break();
               })),
           [](auto &context, auto &value) {
@@ -213,11 +214,11 @@ TEST_CASE("inner and outer while if async", "[stackless]") {
           stackless_coroutine::make_while_true(
               stackless_coroutine::make_if(
                   [](auto &value) { return value.inner < 7; },
-                  stackless_coroutine::make_block(
+                  std::make_tuple(
                       [](auto &context, auto &value) {
                         return context.do_next();
                       }),
-                  stackless_coroutine::make_block(
+                  std::make_tuple(
                       [](auto &context, auto &value) {
                         return context.do_break();
                       })),
@@ -231,6 +232,7 @@ TEST_CASE("inner and outer while if async", "[stackless]") {
               }))));
   REQUIRE(f.get() == 35);
 }
+
 
 TEST_CASE("inner and outer while async", "[stackless]") {
   auto f = get_future<value_temp_t<int>>(stackless_coroutine::make_block(
@@ -277,7 +279,6 @@ TEST_CASE("inner and outer while async", "[stackless]") {
               }))));
   REQUIRE(f.get() == 35);
 }
-
 TEST_CASE("inner and outer while if async with early return", "[stackless]") {
   auto f = get_future<value_temp_t<int>>(stackless_coroutine::make_block(
       [](auto &context, auto &value) {
@@ -288,9 +289,9 @@ TEST_CASE("inner and outer while if async with early return", "[stackless]") {
       stackless_coroutine::make_while_true(
           stackless_coroutine::make_if(
               [](auto &value) { return value.outer < 5; },
-              stackless_coroutine::make_block(
+              std::make_tuple(
                   [](auto &context, auto &value) { return context.do_next(); }),
-              stackless_coroutine::make_block([](auto &context, auto &value) {
+              std::make_tuple([](auto &context, auto &value) {
                 return context.do_break();
               })),
           [](auto &context, auto &value) {
@@ -304,11 +305,11 @@ TEST_CASE("inner and outer while if async with early return", "[stackless]") {
           stackless_coroutine::make_while_true(
               stackless_coroutine::make_if(
                   [](auto &value) { return value.inner < 7; },
-                  stackless_coroutine::make_block(
+                  std::make_tuple(
                       [](auto &context, auto &value) {
                         return context.do_next();
                       }),
-                  stackless_coroutine::make_block(
+                  std::make_tuple(
                       [](auto &context, auto &value) {
                         return context.do_break();
                       })),
@@ -322,11 +323,11 @@ TEST_CASE("inner and outer while if async with early return", "[stackless]") {
               },
               stackless_coroutine::make_if(
                   [](auto &value) { return value.return_value == 29; },
-                  stackless_coroutine::make_block(
+                  std::make_tuple(
                       [](auto &context, auto &value) {
                         return context.do_return();
                       }),
-                  stackless_coroutine::make_block(
+                  std::make_tuple(
                       [](auto &context, auto &value) {})
 
                       )))));
@@ -363,11 +364,11 @@ TEST_CASE("inner and outer while if async with early return using make_while "
               },
               stackless_coroutine::make_if(
                   [](auto &value) { return value.return_value == 29; },
-                  stackless_coroutine::make_block(
+                  std::make_tuple(
                       [](auto &context, auto &value) {
                         return context.do_return();
                       }),
-                  stackless_coroutine::make_block(
+                  std::make_tuple(
                       [](auto &context, auto &value) {})
 
                       )))));
@@ -408,11 +409,11 @@ TEST_CASE("inner and outer while if async with early return using make_while "
               },
               stackless_coroutine::make_if(
                   [](auto &value) { return value.return_value == 29; },
-                  stackless_coroutine::make_block(
+                  std::make_tuple(
                       [](auto &context, auto &value) {
                         return context.do_return();
                       }),
-                  stackless_coroutine::make_block(
+                  std::make_tuple(
                       [](auto &context, auto &value) {})
 
                       )))));
@@ -456,14 +457,14 @@ TEST_CASE("inner and outer while if async with early return using exception "
               },
               stackless_coroutine::make_if(
                   [](auto &value) { return value.return_value == 29; },
-                  stackless_coroutine::make_block([](auto &context,
+                  std::make_tuple([](auto &context,
                                                      auto &value) {
 
                     std::string message = "Exception thrown. value: " +
                                           std::to_string(value.return_value);
                     throw std::runtime_error(message);
                   }),
-                  stackless_coroutine::make_block(
+                  std::make_tuple(
                       [](auto &context, auto &value) {})
 
                       )))));

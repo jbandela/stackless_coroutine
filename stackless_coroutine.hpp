@@ -1,4 +1,5 @@
 // Copyright 2016 John R. Bandela
+// Copyright 2017 Google Inc.
 // Distributed under the Boost Software License, Version 1.0.
 //    (See accompanying file LICENSE_1_0.txt or copy at
 //          http://www.boost.org/LICENSE_1_0.txt)
@@ -37,429 +38,360 @@ enum class operation {
 };
 
 namespace detail {
-struct async_result {
-  operation op = operation::_suspend;
+	struct async_result {
+		operation op = operation::_suspend;
 
-  async_result() {}
-  async_result(operation op) : op(op) {}
-};
+		async_result() {}
+		async_result(operation op) : op(op) {}
+	};
 
-template <class F, std::size_t Pos> struct dummy_coroutine_context {
+	template<class Variables>
+	struct dummy_coroutine_context {
 
-	template <class... T> operation operator()(T &&... t) { return operation::_continue; }
+		template <class... T> operation operator()(T &&... t) { return operation::_continue; }
 
-  operation do_return() { return operation::_return; };
-  operation do_break() { return operation::_break; }
-  operation do_continue() { return operation::_continue; };
-  operation do_next() { return operation::_next; };
-  async_result do_async() { return async_result{}; }
-  template <class Value> async_result do_async_yield(Value v) {
-    return async_result{};
-  }
-  async_result do_async_return() { return async_result{}; }
-  async_result do_async_break() { return async_result{}; }
-  async_result do_async_continue() { return async_result{}; }
-  F &f() { return *f_; }
-  F *f_;
-  dummy_coroutine_context() {}
-  dummy_coroutine_context(const dummy_coroutine_context &) {}
-  dummy_coroutine_context(dummy_coroutine_context &&) {}
-  template <class T> dummy_coroutine_context(T &) {}
+		operation do_return() { return operation::_return; };
+		operation do_break() { return operation::_break; }
+		operation do_continue() { return operation::_continue; };
+		operation do_next() { return operation::_next; };
+		async_result do_async() { return async_result{}; }
+		template <class Value> async_result do_async_yield(Value v) {
+			return async_result{};
+		}
+		async_result do_async_return() { return async_result{}; }
+		async_result do_async_break() { return async_result{}; }
+		async_result do_async_continue() { return async_result{}; }
+		dummy_coroutine_context() {}
+		dummy_coroutine_context(const dummy_coroutine_context &) {}
+		dummy_coroutine_context(dummy_coroutine_context &&) {}
+		template <class T> dummy_coroutine_context(T &) {}
 
-  template <class V> static dummy_coroutine_context get_context(V *v) { return{}; }
+		template <class V> static dummy_coroutine_context get_context(V *v) { return{}; }
 
-  enum { position = Pos };
-  enum { level = F::level };
-  enum { is_loop = true };
-  enum { is_if = true };
-};
+		Variables& variables(){return *pv;}
 
-template <bool Loop, bool If> struct loop_base {
-  enum { is_loop = false };
-  enum { is_if = If };
-};
-template <bool If> struct loop_base<true, If> {
-  enum { is_loop = true };
-  enum { is_if = If };
-  operation do_break() { return operation::_break; }
-  operation do_continue() { return operation::_continue; }
-  async_result do_async_break() { return async_result{operation::_break}; }
-  async_result do_async_continue() {
-    return async_result{operation::_continue};
-  }
-};
+		Variables* pv;
 
-template <class Finished, size_t Pos, bool Loop, bool If>
-struct coroutine_context : loop_base<Loop, If> {
+	};
+	template<class Variables>
+	struct void_coroutine_context {
+		Variables* pv;
 
-  enum { position = Pos };
-  enum { level = Finished::level };
+		Variables& variables() { return *pv; };
 
-  operation do_return() { return operation::_return; };
-  operation do_next() { return operation::_next; };
+	};
+	template<class Variables>
+	struct operation_coroutine_context {
 
-  coroutine_context(Finished f) : f_{std::move(f)} {}
-  Finished f_;
-  Finished &f() { return f_; }
-};
 
-template <class ReturnValue, std::size_t Pos, std::size_t Size, bool Loop,
-          bool If, bool DoContinue>
-struct coroutine_processor;
+		operation do_return() { return operation::_return; };
+		operation do_break() { return operation::_break; }
+		operation do_continue() { return operation::_continue; };
+		operation do_next() { return operation::_next; };
 
-#ifdef STACKLESS_COROUTINE_NO_EXCEPTIONS
-template <class CP, class F, class... A>
-auto process_catch_exceptions(F &f, A &&... a) {
-  return CP::process(f, std::forward<A>(a)...);
-}
+		Variables* pv;
 
-#else
-template <class CP, class F, class... A>
-auto process_catch_exceptions(F &f, A &&... a) {
-  try {
-    return CP::process(f, std::forward<A>(a)...);
-  } catch (...) {
-    f(f.value(), std::current_exception(), operation::_exception);
-    return operation::_exception;
-  }
-}
+		Variables& variables() { return *pv; };
 
+
+	};
+
+
+
+	template<class T> struct type2type { using type = T; };
+
+	template<class F>
+	struct if_else_helper_base {
+		F& f_;
+		template<class... A>
+		auto operator()(A&&... a) {
+			return f_(std::forward<A>(a)...);
+		}
+	};
+
+	template<bool b, class F1, class F2>
+	struct if_else_helper:if_else_helper_base<F2> {
+		if_else_helper(F1&, F2& f2) :if_else_helper_base<F2>{ f2 } {}
+	};
+	template<class F1, class F2>
+	struct if_else_helper<true, F1, F2>:if_else_helper_base<F1>  {
+
+
+		if_else_helper(F1& f1, F2&) :if_else_helper_base<F1>{ f1 } {}
+
+	};
+	template<bool b, class F1, class F2, class... A>
+	auto if_else_(F1 f1, F2 f2, A&&... a) {
+		if_else_helper<b, F1, F2> helper{ f1,f2 };
+		return helper(std::forward<A>(a)...);
+
+	}
+
+	template<int N, int... Ns>
+	auto append_sequence(std::integer_sequence<int, Ns...>) {
+		return std::integer_sequence<int, Ns..., N>{};
+	}
+
+
+
+	template<class Tuple>
+	struct while_t {
+		Tuple t;
+	};
+	template<class F,class Tuple, int Else>
+	struct if_t {
+		F f;
+		Tuple t;
+		enum{else_start = Else};
+	};
+
+   	
+
+
+	template<class T>
+	struct is_while_t { enum { value = 0 }; };
+
+	template<class T>
+	struct is_while_t<while_t<T>> {
+		enum {
+			value = 1
+		};
+	};
+
+
+
+
+	template<int N, class... Ts>
+	const auto& get_function(const std::tuple<Ts...>& t) {
+		return std::get<N>(t);
+	}
+	template<int N, class Tuple>
+	const auto& get_function(const while_t<Tuple>& t) {
+		return get_function<N>(t.t);
+	}
+	template<int N, class F,class Tuple, int Else>
+	const auto& get_function(const if_t<F,Tuple,Else>& t) {
+		return get_function<N>(t.t);
+	}
+
+
+
+	template<class T>struct  get_size_helper;
+
+	template<class... T>
+	struct get_size_helper<std::tuple<T...>> {
+		enum { size = sizeof...(T) };
+	};
+	template<class...T>
+	struct get_size_helper<while_t<std::tuple<T...>>> {
+		enum { size = sizeof...(T) };
+	};
+
+	template<class F,class Tuple, int Else>
+	struct get_size_helper<if_t<F,Tuple,Else>> {
+		enum { size = std::tuple_size<Tuple>::value };
+	};
+
+
+	template<class T>
+	constexpr int get_size_v = get_size_helper<T>::size;
+
+
+
+
+	struct processor {
+
+		struct while_type {};
+		struct if_type {};
+		template<class Variables, class Function, class... A>
+		static auto get_return(Variables& vars, Function& f, A&&... a) {
+
+
+			dummy_coroutine_context<Variables> dc;
+			return type2type<decltype(f(dc, vars, std::forward<A>(a)...)) > {};
+		}
+		template<class Variables, class WhileTuple>
+		static auto get_return(Variables& , const while_t<WhileTuple>&) {
+
+			
+			return type2type<while_type>{};
+		}
+		template<class Variables, class IfF, class IfTuple, int IfElse>
+		static auto get_return(Variables&, const if_t<IfF,IfTuple,IfElse>& ift) {
+
+
+			return type2type<if_type>{};
+		}
+
+
+		template<int N, class FunctionLevelTuple, class OuterSequence, class Tuple, class Variables>
+		static operation process_next(operation op, FunctionLevelTuple& function_level_tuple, OuterSequence outer_sequence, const Tuple& t, Variables& vars) {
+			if (op == operation::_next) {
+				return if_else_<N < get_size_v<Tuple> - 1>(
+					[&](auto& t) ->operation {
+
+					auto next_return = get_return(vars, get_function<N + 1>(t));
+					return process<N + 1>(next_return, function_level_tuple, outer_sequence, t, vars);
+
+				},
+					[](auto& t) {return operation::_done; },
+					t);
+
+
+			}
+			else {
+				return op;
+			}
+
+
+		}
+
+
+		template<int N, class FunctionLevelTuple, class OuterSequence, class Tuple, class Variables, class... Args>
+		static operation process(type2type<void>, FunctionLevelTuple& function_level_tuple, OuterSequence outer_sequence, const Tuple& t, Variables& vars, Args&&... args) {
+                auto func = [&](auto&&... a) {
+				get_function<N>(t)(std::forward<decltype(a)>(a)...); 
+				return operation::_next; };
+
+				void_coroutine_context<Variables> vc{&vars};
+			auto op = func(
+				vc,vars, std::forward<Args>(args)...);
+			return process_next<N>(op, function_level_tuple, outer_sequence, t, vars);
+		}
+
+		template<int N, class FunctionLevelTuple, class OuterSequence, class Tuple, class Variables, class... Args>
+		static operation process(type2type<operation>, FunctionLevelTuple& function_level_tuple, OuterSequence outer_sequence, const Tuple& t, Variables& vars, Args&&... args) {
+			operation_coroutine_context<Variables> oc{ &vars };
+			auto op = get_function<N>(t)( oc, vars, std::forward<Args>(args)...);
+			return process_next<N>(op, function_level_tuple, outer_sequence, t, vars);
+		}
+		template<int N, class FunctionLevelTuple, class OuterSequence, class Tuple, class Variables, class... Args>
+		static operation process(type2type<while_type>, FunctionLevelTuple& function_level_tuple, OuterSequence outer_sequence, const Tuple& t, Variables& vars, Args&&... args) {
+			process_outermost_block(append_sequence<0>(append_sequence<N>(outer_sequence)), function_level_tuple, vars, std::forward<Args>(args)...);
+			return operation::_suspend;
+		}
+		template<int N, class FunctionLevelTuple, class OuterSequence, class Tuple, class Variables, class... Args>
+		static operation process(type2type<if_type>, FunctionLevelTuple& function_level_tuple, OuterSequence outer_sequence, const Tuple& t, Variables& vars, Args&&... args) {
+			const auto& ift = get_function<N>(t);
+			using ift_type = std::decay_t<decltype(ift)>;
+			operation op;
+			if (ift.f(vars)) {
+				op = process_block(std::integer_sequence<int, 0>{}, function_level_tuple, append_sequence<N>(outer_sequence), ift.t, vars);
+			}
+			else {
+				op = process_block(std::integer_sequence<int, ift_type::else_start >{}, function_level_tuple, append_sequence<N>(outer_sequence), ift.t, vars);
+			}
+			if (op == operation::_done) { op = operation::_next; }
+			return process_next<N>(op, function_level_tuple, outer_sequence, t, vars);
+		}
+
+
+		template<class Sequence, class Variables>
+		struct async_coroutine_context {
+			Variables* pv;
+			template <class... A> void operator()(A &&... a) {
+				process_outermost_block(Sequence{}, *pv->stackless_coroutine_tuple, *pv, std::forward<A>(a)...);
+			}
+
+			async_result do_async() { return async_result{ operation::_suspend }; }
+			template <class Value> async_result do_async_yield(Value v) {
+				variables().stackless_coroutine_set_generator_value(std::move(v));
+				variables().stackless_coroutine_set_generator_next(*this);
+				return do_async();
+			}
+ 
+			async_result do_async_return() { return async_result{ operation::_return }; }
+			async_result do_async_break() { return async_result{ operation::_break }; }
+			async_result do_async_continue() { return async_result{ operation::_continue }; }
+
+			template <class V> static async_coroutine_context get_context(V *v) { return async_coroutine_context{ static_cast<Variables*>(v) }; }
+
+			Variables& variables() { return *pv; };
+
+
+
+		};
+		template<int N, class FunctionLevelTuple, class OuterSequence, class Tuple, class Variables, class... Args>
+		static operation process(type2type<async_result>, FunctionLevelTuple& function_level_tuple, OuterSequence outer_sequence, const Tuple& t, Variables& vars, Args&&... args) {
+			async_coroutine_context<decltype(append_sequence<N + 1>(outer_sequence)),Variables> ac{ &vars };
+			async_result op = get_function<N>(t)(ac,vars, std::forward<Args>(args)...);
+			return op.op;
+		}
+
+
+
+		template<int N, int Next, int... Rest, class FunctionLevelTuple, class OuterSequence, class Tuple, class Variables, class... Args>
+		static operation process_block(std::integer_sequence<int, N, Next, Rest...>, FunctionLevelTuple& function_level_tuple, OuterSequence outer_sequence, const Tuple& t, Variables& vars, Args&&... args) {
+			operation op;
+
+			op = process_block(std::integer_sequence<int, Next, Rest...>{}, function_level_tuple, append_sequence<N>(outer_sequence), get_function<N>(t), vars, std::forward<Args>(args)...);
+
+			using continue_sequence = std::integer_sequence<int, 0>;
+
+			op = if_else_<is_while_t<std::decay_t<decltype(get_function<N>(t))>>::value>([&](auto& t) {
+				operation lop = op;
+				while (lop == operation::_continue) {
+
+					lop = process_block(continue_sequence{}, function_level_tuple, append_sequence<N>(outer_sequence), get_function<N>(t), vars);
+				}
+				if (lop == operation::_break) { lop = operation::_done; }
+				return lop;
+
+			}, [&](auto&) {return op; }, t);
+
+			if (op == operation::_done) {
+				return if_else_ < (N < get_size_v<Tuple> - 1)>([&](auto& t) {
+					return process_block(std::integer_sequence<int, N + 1>{}, function_level_tuple, outer_sequence, t, vars);
+				},
+					[] {return operation::_done; }, t);
+
+			}
+			return op;
+		}
+		template<int N, class FunctionLevelTuple, class OuterSequence, class Tuple, class Variables, class... Args>
+		static operation process_block(std::integer_sequence<int, N>, FunctionLevelTuple& function_level_tuple, OuterSequence outer_sequence, const Tuple& t, Variables& vars, Args&&... args) {
+			auto return_type = get_return(vars, get_function<N>(t), std::forward<Args>(args)...);
+			return process<N>(return_type, function_level_tuple, outer_sequence, t, vars, std::forward<Args>(args)...);
+		}
+
+		template<int N, int... Rest, class FunctionLevelTuple, class Variables, class... Args>
+		static void process_outermost_block(std::integer_sequence<int, N, Rest...> seq, FunctionLevelTuple& function_level_tuple, Variables& vars, Args&&... args) {
+
+			operation op;
+			exception_ptr eptr{ nullptr };
+#ifndef STACKLESS_COROUTINE_NO_EXCEPTIONS
+			try {
 #endif
 
-template <std::size_t Pos, std::size_t Size, bool Loop, bool If,
-          bool DoContinue>
-struct coroutine_processor<void, Pos, Size, Loop, If, DoContinue> {
-  enum { position = Pos };
+				op = process_block(seq, function_level_tuple, std::integer_sequence<int>{}, function_level_tuple, vars, std::forward<Args>(args)...);
+#ifndef STACKLESS_COROUTINE_NO_EXCEPTIONS
+			}
+			catch (...) {
+				eptr = std::current_exception();
+				op = operation::_exception;
 
-  using helper =
-      coroutine_processor<operation, Pos, Size, Loop, If, DoContinue>;
+		}
+#endif
+			if (op == operation::_done || op == operation::_return || op == operation::_exception) {
+				vars.stackless_coroutine_callback_function(vars, eptr, op);
+			}
+		}
 
-  template <class Finished, class... T>
-  static operation process(Finished &f, T &&... results) {
 
-    coroutine_context<Finished, Pos, Loop, If> ctx{std::move(f)};
-    auto &tuple = ctx.f().tuple();
-    auto &value = ctx.f().value();
-    std::get<Pos>(tuple)(ctx, value, std::forward<T>(results)...);
-    return helper::do_next(f, std::integral_constant<std::size_t, Pos + 1>{});
-  }
-};
-template <std::size_t Pos, std::size_t Size, bool Loop, bool If,
-          bool DoContinue>
-struct coroutine_processor<operation, Pos, Size, Loop, If, DoContinue> {
 
-  enum { position = Pos };
 
-  template <class Finished>
-  static operation do_next(Finished &f,
-                           std::integral_constant<std::size_t, Size>) {
-    return operation::_done;
-  }
-  template <class Finished, std::size_t P>
-  static operation do_next(Finished &f,
-                           std::integral_constant<std::size_t, P>) {
-    using DC = dummy_coroutine_context<Finished, P>;
-    using next_return =
-        decltype(std::get<P>(f.tuple())(std::declval<DC &>(), f.value()));
+	};
 
-    return coroutine_processor<next_return, P, Size, Loop, If,
-                               DoContinue>::process(f);
-  }
-  template <class Finished>
-  static operation
-  do_next_no_continue(Finished &f, std::integral_constant<std::size_t, Size>) {
-    return operation::_done;
-  }
 
-  template <class Finished, std::size_t P>
-  static operation do_next_no_continue(Finished &f,
-                                       std::integral_constant<std::size_t, P>) {
-    using DC = dummy_coroutine_context<Finished, P>;
-    using next_return =
-        decltype(std::get<P>(f.tuple())(std::declval<DC &>(), f.value()));
 
-    return coroutine_processor<next_return, P, Size, Loop, If, false>::process(
-        f);
-  }
-
-  template <class Finished, class... T>
-  static operation process(Finished &f, T &&... results) {
-
-    coroutine_context<Finished, Pos, Loop, If> ctx{std::move(f)};
-    operation op = std::get<Pos>(ctx.f().tuple())(ctx, ctx.f().value(),
-                                                  std::forward<T>(results)...);
-    if (op == operation::_continue) {
-      if (If) {
-        return op;
-      } else if (DoContinue) {
-        while (true) {
-          auto op = do_next_no_continue(f, std::integral_constant < std::size_t,
-                                        Loop ? 0 : Size > {});
-          if (op != operation::_continue) {
-            return op;
-          }
-        }
-      }
-    } else if (op == operation::_next) {
-      return do_next(f, std::integral_constant<std::size_t, Pos + 1>{});
-    }
-    return op;
-  }
-};
-
-template <typename V, typename F, typename = void>
-struct has_finished_storage : std::false_type {};
-template <typename V, typename F>
-struct has_finished_storage<
-    V, F,
-    decltype((void)std::declval<V>().stackless_coroutine_finished_storage)> {
-  using storage_t = std::decay_t<decltype(
-      std::declval<V>().stackless_coroutine_finished_storage)>;
-  static constexpr bool value =
-      sizeof(F) <= sizeof(storage_t) && alignof(F) <= alignof(storage_t);
-};
-
-template <class V, class F>
-constexpr bool has_finished_storage_v = has_finished_storage<V, F>::value;
-
-template <class AsyncContext, class Finished, bool>
-struct get_context_from_void {
-  template <class V> auto static get_context(V *v) {
-    Finished f{static_cast<typename Finished::value_t *>(v)};
-    return AsyncContext{f};
-  }
-};
-template <class AsyncContext, class Finished>
-struct get_context_from_void<AsyncContext, Finished, false> {};
-
-template <std::size_t Pos, std::size_t Size, bool Loop, bool If,
-          bool DoContinue>
-struct coroutine_processor<async_result, Pos, Size, Loop, If, DoContinue> {
-
-  enum { position = Pos };
-
-  template <class Finished>
-  struct async_context
-      : coroutine_context<Finished, Pos, Loop, If>,
-        get_context_from_void<
-            async_context<Finished>, Finished,
-            has_finished_storage<typename Finished::value_t, Finished>::value> {
-    using base_t = coroutine_context<Finished, Pos, Loop, If>;
-    async_context(Finished f) : base_t{std::move(f)} {}
-    using base_t::f;
-
-    async_result do_async() { return async_result{operation::_suspend}; }
-    template <class Value> async_result do_async_yield(Value v) {
-      f().value().stackless_coroutine_set_generator_value(std::move(v));
-      f().value().stackless_coroutine_set_generator_next(*this);
-      return do_async();
-    }
-    async_result do_async_return() { return async_result{operation::_return}; }
-    template <class... A> auto operator()(A &&... a) {
-      using DC = dummy_coroutine_context<Finished, Pos + 1>;
-      using next_return = decltype(std::get<Pos + 1>(f().tuple())(
-          std::declval<DC &>(), f().value(), std::forward<decltype(a)>(a)...));
-
-      using CP =
-          coroutine_processor<next_return, Pos + 1, Size, Loop, If, true>;
-
-      operation op =
-          process_catch_exceptions<CP>(f(), std::forward<decltype(a)>(a)...);
-      if (op == operation::_done || op == operation::_return ||
-          op == operation::_break) {
-        f()(f().value(), nullptr, op);
-      }
-      return op;
-    }
-  };
-
-  template <class Finished, class... T>
-  static operation process(Finished &f, T &&... results) {
-    async_context<Finished> ctx{f};
-
-    auto r = std::get<Pos>(ctx.f().tuple())(ctx, ctx.f().value(),
-                                            std::forward<T>(results)...);
-    return r.op;
-  }
-};
-
-template <class F, class Tuple> struct finished_tuple_holder {
-  F f;
-  const Tuple *t;
-};
-template <std::size_t Level, class Value, class Tuple, class F, class Destroyer,
-          bool HasFinishedStorage>
-struct finished_wrapper_impl {
-
-  enum { level = Level };
-  Value *value_;
-  const Tuple *tuple_;
-  F f_;
-
-  const Tuple &tuple() { return *tuple_; };
-  Value &value() { return *value_; }
-  enum { tuple_size = std::tuple_size<Tuple>::value };
-
-  template <class... A> auto operator()(A &&... a) {
-    Destroyer d{value_};
-    (void)d;
-    return f_(std::forward<A>(a)...);
-  }
-};
-template <std::size_t Level, class Value, class Tuple, class F, class Destroyer>
-struct finished_wrapper_impl<Level, Value, Tuple, F, Destroyer, true> {
-
-  enum { level = Level };
-  Value *value_;
-
-  finished_tuple_holder<F, Tuple> &
-      ft_holder(std::integral_constant<std::size_t, 0>) {
-    return *reinterpret_cast<finished_tuple_holder<F, Tuple> *>(
-        &(value_->stackless_coroutine_finished_storage));
-  }
-  template <std::size_t I>
-  finished_tuple_holder<F, Tuple> &
-      ft_holder(std::integral_constant<std::size_t, I>) {
-    static_assert(
-        std::tuple_size<decltype(
-                value_->stackless_coroutine_finished_storage_level)>::value >=
-            I,
-        "stackless_coroutine_finished_storage array not large enough");
-    return *reinterpret_cast<finished_tuple_holder<F, Tuple> *>(
-        &(value_->stackless_coroutine_finished_storage_level[I - 1]));
-  }
-
-  finished_tuple_holder<F, Tuple> &ft_holder() {
-    return ft_holder(std::integral_constant<std::size_t, Level>{});
-  }
-  const Tuple &tuple() { return *ft_holder().t; };
-  F &f() { return ft_holder().f; };
-  Value &value() { return *value_; }
-  enum { tuple_size = std::tuple_size<Tuple>::value };
-
-  void finished_wrapper_impl_init(Value *v, const Tuple *t, F &f_temp,
-                                  std::integral_constant<std::size_t, 0>) {
-
-    using element_t = decltype(value_->stackless_coroutine_finished_storage);
-
-    static_assert(
-        sizeof(finished_tuple_holder<F, Tuple>) <= sizeof(element_t) &&
-            alignof(finished_tuple_holder<F, Tuple>) <= alignof(element_t),
-        "stackless_coroutine_finished_storage element not large enough or not "
-        "aligned correctly");
-    new (&(value_->stackless_coroutine_finished_storage))
-        finished_tuple_holder<F, Tuple>{std::move(f_temp), t};
-  }
-  template <std::size_t I>
-  void finished_wrapper_impl_init(Value *v, const Tuple *t, F &f_temp,
-                                  std::integral_constant<std::size_t, I>) {
-    static_assert(
-        std::tuple_size<decltype(
-                value_->stackless_coroutine_finished_storage_level)>::value >=
-            I,
-        "stackless_coroutine_finished_storage_level array not large enough");
-
-    using element_t = std::tuple_element_t<
-        I - 1, decltype(value_->stackless_coroutine_finished_storage_level)>;
-
-    static_assert(
-
-        sizeof(finished_tuple_holder<F, Tuple>) <= sizeof(element_t),
-        "stackless_coroutine_finished_storage element not large enough");
-
-    static_assert(alignof(finished_tuple_holder<F, Tuple>) <=
-                      alignof(element_t),
-                  "stackless_coroutine_finished_storage element not "
-                  "aligned correctly");
-    new (&(value_->stackless_coroutine_finished_storage_level[I - 1]))
-        finished_tuple_holder<F, Tuple>{std::move(f_temp), t};
-  }
-
-  finished_wrapper_impl(Value *v, const Tuple *t, F f_temp) : value_{v} {
-    finished_wrapper_impl_init(v, t, f_temp,
-                               std::integral_constant<std::size_t, Level>{});
-  }
-  finished_wrapper_impl(Value *v) : value_{v} {}
-
-  struct f_destroyer {
-    finished_wrapper_impl *pthis;
-
-    ~f_destroyer() { pthis->f().~F(); }
-  };
-  template <class... A> auto operator()(A &&... a) {
-    if (Level == 0) {
-      Destroyer d{value_};
-      f_destroyer fd{this};
-      (void)d;
-      f()(std::forward<A>(a)...);
-
-    } else {
-      f_destroyer fd{this};
-      f()(std::forward<A>(a)...);
-    }
-  }
-};
-template <std::size_t Level, class Value, class Tuple, class F,
-          class Destroyer = Value *>
-struct finished_wrapper
-    : finished_wrapper_impl<Level, Value, Tuple, F, Destroyer,
-                            has_finished_storage_v<Value, F>> {
-
-  using value_t = Value;
-  using fimpl = finished_wrapper_impl<Level, Value, Tuple, F, Destroyer,
-                                      has_finished_storage_v<Value, F>>;
-
-  template <class... T>
-  finished_wrapper(T &&... t) : fimpl{std::forward<T>(t)...} {}
-};
-
-template <bool IsLoop, bool If, class Finished, class... A>
-auto run_helper(Finished f, A &&... a) {
-
-  using DC = dummy_coroutine_context<Finished, 0>;
-  using ret_type = decltype(std::get<0>(f.tuple())(
-      std::declval<DC &>(), f.value(), std::forward<A>(a)...));
-
-  auto op = process_catch_exceptions<
-      coroutine_processor<ret_type, 0, Finished::tuple_size, IsLoop, If, true>>(
-      f, std::forward<A>(a)...);
-  if (op == operation::_done || op == operation::_return ||
-      (If && op == operation::_continue) || (op == operation::_break)) {
-    f(f.value(), nullptr, op);
-  }
-  return op;
-}
-
-template <std::size_t Level, class Value, class Tuple, class FinishedTemp,
-          class... A>
-auto run_loop(Value *v, const Tuple *t, FinishedTemp f_temp, A &&... a) {
-  using Finished = finished_wrapper<Level, Value, Tuple, FinishedTemp>;
-
-  return run_helper<true, false>(Finished{v, t, std::move(f_temp)});
-}
-template <bool Loop, std::size_t Level, class Value, class Tuple,
-          class FinishedTemp, class... A>
-auto run_if(Value *v, const Tuple *t, FinishedTemp f_temp, A &&... a) {
-  using Finished = finished_wrapper<Level, Value, Tuple, FinishedTemp>;
-
-  return run_helper<Loop, true>(Finished{v, t, std::move(f_temp)});
-}
-}
-template <class Value, class Tuple, class FinishedTemp, class... A>
-auto run(Value *v, const Tuple *t, FinishedTemp f_temp, A &&... a) {
-  using Finished = detail::finished_wrapper<0, Value, Tuple, FinishedTemp>;
-
-  return detail::run_helper<false, false>(Finished{v, t, std::move(f_temp)});
-}
-template <class Type, class Deleter, class Tuple, class FinishedTemp,
-          class... A>
-auto run(std::unique_ptr<Type, Deleter> v, const Tuple *t, FinishedTemp f_temp,
-         A &&... a) {
-  using Finished = detail::finished_wrapper<0, Type, Tuple, FinishedTemp,
-                                            std::unique_ptr<Type, Deleter>>;
-
-  return detail::run_helper<false, false>(
-      Finished{v.release(), t, std::move(f_temp)}, std::forward<A>(a)...);
+	template<class Destroyer>
+	struct finished_wrapper_impl {
+		template <class Variables, class... A> auto operator()(Variables& v, A &&... a) {
+			Destroyer d{ &v };
+			(void)d;
+			return v.stackless_coroutine_callback_function(v, std::forward<A>(a)...);
+		}
+	};
 }
 
 namespace detail {
@@ -479,256 +411,87 @@ auto make_block(T &&... t)
 
 namespace detail {
 
-template <std::size_t Offset, class Context, class Finished>
-auto while_true_finished_helper(Finished &f) {
 
-  constexpr auto size = Finished::tuple_size;
-  constexpr auto pos = Context::position + Offset;
 
-  using DC = dummy_coroutine_context<Finished, pos>;
-  using ret_type =
-      decltype(std::get<pos>(f.tuple())(std::declval<DC &>(), f.value()));
 
-  auto op = process_catch_exceptions<coroutine_processor<
-      ret_type, pos, size, Context::is_loop, Context::is_if, true>>(f);
-
-  if (op == operation::_done || op == operation::_return ||
-      op == operation::_break) {
-    (f)(f.value(), nullptr, op);
-    return op;
-  } else {
-    return op;
-  }
 }
 
-const auto dummy_while_terminator = [](auto &, auto &) {
-  return operation::_continue;
-};
-using dummy_while_terminator_t = std::decay_t<decltype(dummy_while_terminator)>;
-}
-template <class Tuple> struct make_while_func_t {
-  Tuple tuple;
-
-  using tuple_t = std::remove_pointer_t<Tuple>;
-
-  template <class Context, class Value>
-  auto operator()(Context &context, Value &value) const {
-    using context_type = std::decay_t<decltype(context)>;
-
-    auto finished = [f = context.f()](auto &value, exception_ptr ep,
-                                      operation op) mutable {
-      if (ep && op == operation::_exception) {
-        (f)(f.value(), ep, operation::_exception);
-      } else if (op == operation::_break) {
-        detail::while_true_finished_helper<1, context_type>(f);
-      } else if (op == operation::_return) {
-        (f)(f.value(), ep, operation::_return);
-      }
-      return op;
-    };
-
-    detail::run_loop<context_type::level + 1>(&value, tuple, finished);
-    return operation::_suspend;
-  }
-};
 template <class... T> auto make_while_true(T &&... t) {
+	const auto dummy_while_terminator = [](auto &, auto &) {
+		return operation::_continue;
+	};
+	auto tuple =
+      std::make_tuple(std::forward<T>(t)..., dummy_while_terminator);
+  return detail::while_t<decltype(tuple)>{ std::move(tuple) };
 
-  auto tuple =
-      make_block(std::forward<T>(t)..., detail::dummy_while_terminator);
-  using mwf_t = make_while_func_t<decltype(tuple)>;
-  mwf_t func{tuple};
-  return func;
+};
+template <class F, class... T> auto make_while(F f,T &&... t) {
+
+	auto condition = [f = std::move(f)](auto& context, auto& vars){
+		if (!f(vars)) {
+			return context.do_break();
+		}
+		else {
+			return context.do_next();
+		}
+	};
+	return make_while_true(std::move(condition), std::forward<T>(t)...);
 };
 
-template <class Tuple> struct make_if_func_t {
-  Tuple tuple;
-  using tuple_t = std::remove_pointer_t<Tuple>;
 
-  template <class Context, class Value>
-  auto operator()(Context &context, Value &value) const {
+template<class F, class T1, class T2>
+auto make_if(F&& f, T1&& t1, T2&& t2) {
+	auto dummy_done = [](auto&, auto&) {return operation::_done; };
 
-    using context_t = std::decay_t<decltype(context)>;
+	auto combined = std::tuple_cat(std::forward<T1>(t1), std::make_tuple(dummy_done), std::forward<T2>(t2), std::make_tuple(dummy_done));
+	using combined_type = decltype(combined);
 
-    return detail::run_if<context_t::is_loop, context_t::level + 1>(
-        &value, tuple,
-        [context](auto &value, exception_ptr ep, operation op) mutable {
-          auto &f = context.f();
-
-          if (ep && op == operation::_exception) {
-            f(value, ep, op);
-          } else if (op == operation::_break || op == operation::_continue ||
-                     op == operation::_return) {
-            f(value, ep, op);
-          } else if (op == operation::_done) {
-            detail::while_true_finished_helper<1, context_t>(f);
-          }
-        });
-  };
-};
-
-template <class Pred, class Then, class Else>
-auto make_if(Pred pred, Then t, Else e) {
-  auto tup = make_block(
-      [pred, t, e](auto &context, auto &value) {
-        using context_t = std::decay_t<decltype(context)>;
-        if (pred(value)) {
-          detail::run_if<context_t::is_loop, context_t::level + 1>(&value, t,
-                                                                   context);
-        } else {
-          detail::run_if<context_t::is_loop, context_t::level + 1>(&value, e,
-                                                                   context);
-        }
-        return context.do_async();
-
-      },
-      [](auto &context, auto &value, auto &a, exception_ptr e, auto op) {
-        if (op == operation::_done)
-          return operation::_next;
-        if (op == operation::_exception && e)
-          context.f()(value, e, operation::_exception);
-        return op;
-      }
-
-      );
-
-  make_if_func_t<decltype(tup)> func{tup};
-
-  return func;
-}
-
-template <class P, class... T> auto make_while(P p, T &&... t) {
-  return make_while_true(
-      [=](auto &context, auto &value) {
-        if (p(value)) {
-          return context.do_next();
-        } else {
-          return context.do_break();
-        }
-      },
-      t...);
+	return detail::if_t<std::decay_t<F>, std::decay_t<combined_type>, std::tuple_size<T1>::value + 1>{std::forward<F>(f), std::move(combined)};
 }
 
 namespace detail {
-template <class T> struct calculate_function_level;
+	template <class Variables, class Tuple, class Callback>
+	struct variables_t : Variables {
+		template <class... A> variables_t(const Tuple* tup, Callback callback, A&&... a) : Variables{ std::forward<A>(a)... }, stackless_coroutine_tuple{ tup },
+			stackless_coroutine_callback_function{ std::move(callback) } {}
 
-template <class T> struct function_level {
-  enum { value = 0 };
+		const Tuple* stackless_coroutine_tuple;
+		Callback stackless_coroutine_callback_function;
+	};
+
+}
+template <class Variables, class Tuple, class Callback, class... A>
+auto make_stack_variables(const Tuple* block, Callback cb, A&&... a) {
+
+	return detail::variables_t<Variables, Tuple,Callback>{block, std::move(cb), std::forward<A>(a)...};
 };
 
-template <std::size_t... I> struct calc_max;
 
-template <std::size_t First> struct calc_max<First> {
-  enum { value = First };
+template <class Variables, class Tuple, class Callback, class... A>
+auto make_unique_ptr_variables(const Tuple* block, Callback cb, A&&... a) {
+
+
+	auto real_callback = [cb = std::move(cb)](auto& variables, auto ep, auto op)mutable{
+		std::unique_ptr<std::decay_t<decltype(variables)>> destroyer{ &variables };
+		cb(variables, ep, op);
+	};
+
+	return std::make_unique<detail::variables_t<Variables, Tuple,decltype(real_callback)>>(block, std::move(real_callback), std::forward<A>(a)...);
 };
 
-template <std::size_t First, std::size_t Second, std::size_t... I>
-struct calc_max<First, Second, I...> {
-  enum { value_rest = calc_max<Second, I...>::value };
-  enum { value = First > value_rest ? First : value_rest };
-};
-
-template <class... T> struct calculate_function_level<std::tuple<T...>> {
-  enum { value = calc_max<function_level<T>::value...>::value };
-};
-template <class... T> struct calculate_function_level<const std::tuple<T...>> {
-  enum {
-
-    value = calc_max<function_level<T>::value...>::value
-  };
-};
-
-template <class T> struct function_level<make_while_func_t<T>> {
-  using inner_tuple = typename make_while_func_t<T>::tuple_t;
-  enum { value = 1 + calculate_function_level<inner_tuple>::value };
-};
-template <class T> struct function_level<make_if_func_t<T>> {
-  enum {
-    value =
-        2 + calculate_function_level<typename make_if_func_t<T>::tuple_t>::value
-  };
-};
-
-template <class Value, std::size_t Size, std::size_t LevelSize,
-          std::size_t Levels>
-struct value_t : Value {
-  //  using Value::Value;
-  template <class... T> value_t(T &&... t) : Value{std::forward<T>(t)...} {}
-
-  std::aligned_storage_t<Size> stackless_coroutine_finished_storage;
-  std::array<std::aligned_storage_t<LevelSize>, Levels>
-      stackless_coroutine_finished_storage_level;
-};
-
-template <class Value, class Tuple, class FinishedTemp>
-struct coroutine_holder {
-
-  Value ptr;
-  Tuple t;
-  FinishedTemp f_temp;
-  template <class... A> explicit operator bool() { return ptr.get(); }
-  template <class... A> auto operator()(A &&... a) {
-    return run(std::move(ptr), t, std::move(f_temp),
-               std::forward<decltype(a)>(a)...);
+template<class UVar>
+struct coroutine_holder{
+	UVar variables;
+ template <class... A> auto operator()(A &&... a) {
+	 auto vars = variables.release();
+	 return detail::processor::process_outermost_block(std::integer_sequence<int, 0>{}, *vars->stackless_coroutine_tuple, *vars, std::forward<A>(a)...);
   }
 };
-}
-template <class Value, class Tuple, class FinishedTemp, class... A>
-auto make_coroutine(const Tuple *t, FinishedTemp f_temp, A &&... a) {
-  struct dummy {
-    Value *v;
-  };
-  dummy d;
-  auto dummy_f = [d]() {};
 
-  constexpr auto levels = 1 + detail::calculate_function_level<Tuple>::value;
-  using f_t = detail::finished_wrapper<0, Value, Tuple, FinishedTemp,
-                                       std::unique_ptr<Value>>;
-  using f_t_h = detail::finished_tuple_holder<f_t, Tuple>;
-  using v_t =
-      detail::value_t<Value, sizeof(f_t_h),
-                      sizeof(detail::finished_wrapper<levels - 1, Value, Tuple,
-                                                      decltype(dummy_f)>),
-                      levels>;
-
-  auto ptr = std::make_unique<v_t>(std::forward<A>(a)...);
-
-  return detail::coroutine_holder<std::unique_ptr<v_t>, const Tuple *,
-                                  FinishedTemp>{std::move(ptr), t,
-                                                std::move(f_temp)};
-}
-
-namespace detail {
-template <class T> auto get_level_dummy() {
-  struct dummy {
-    T *v;
-  };
-  dummy d;
-  auto dummy_f = [d]() {};
-
-  struct ft {
-    std::decay_t<decltype(dummy_f)> d;
-    std::tuple<> *t;
-  };
-
-  return ft{dummy_f, nullptr};
-}
-}
-
-template <class Variables, std::size_t levels = 5,
-          std::size_t size = 3 * sizeof(void *),
-          std::size_t level_size = sizeof(detail::get_level_dummy<Variables>())>
-using variables_t = detail::value_t<Variables, size, level_size, levels>;
-
-template <class Value, class Tuple, class FinishedTemp>
-auto make_coroutine(Value &variables, const Tuple *t, FinishedTemp f_temp) {
-  struct dummy {
-    Value *v;
-  };
-  dummy d;
-  auto dummy_f = [d]() {};
-
-  return detail::coroutine_holder<Value *, const Tuple *, FinishedTemp>{
-      &variables, t, std::move(f_temp)};
+template <class Variables, class Tuple, class Callback, class... A>
+auto make_coroutine(const Tuple *t, Callback cb, A &&... a) {
+	auto ptr = make_unique_ptr_variables<Variables>(t, std::move(cb), std::forward<A>(a)...);
+	return coroutine_holder<decltype(ptr)>{std::move(ptr)};
 }
 
 // Generator
@@ -749,11 +512,12 @@ struct generator_imp {
     void stackless_coroutine_set_generator_next(Context context) {
       stackless_coroutine_generator_->next_func_ = [](void *v) {
         auto context = Context::get_context(v);
-        return context();
+        context();
+		return operation::_next;
       };
       stackless_coroutine_generator_->close_func_ = [](void *v) {
         auto context = Context::get_context(v);
-        context.f()(*static_cast<generator_variables_t *>(v), nullptr,
+        context.variables().stackless_coroutine_callback_function(*static_cast<generator_variables_t *>(v), nullptr,
                     operation::_return);
         ;
         return operation::_return;
@@ -768,7 +532,7 @@ struct generator_imp {
   template <class... T> static void create(Generator *g, Block b, T &&... t) {
     auto co = stackless_coroutine::make_coroutine<generator_variables_t>(
         b,
-        [](auto &variables, std::exception_ptr ep, operation op) mutable {
+        [](auto &variables, exception_ptr ep, operation op) mutable {
           auto g = static_cast<generator_variables_t *>(&variables)
                        ->stackless_coroutine_generator_;
           g->generator_variables_ = nullptr;
@@ -777,7 +541,7 @@ struct generator_imp {
           g->move_func_ = nullptr;
         },
         g, std::forward<T>(t)...);
-    g->generator_variables_ = co.ptr.get();
+    g->generator_variables_ = co.variables.get();
     g->move_func_ = [](void *v, Generator *g) {
       static_cast<generator_variables_t *>(v)->stackless_coroutine_generator_ =
           g;

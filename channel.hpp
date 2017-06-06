@@ -1,3 +1,8 @@
+// Copyright 2016 John R. Bandela
+// Copyright 2017 Google Inc.
+// Distributed under the Boost Software License, Version 1.0.
+//    (See accompanying file LICENSE_1_0.txt or copy at
+//          http://www.boost.org/LICENSE_1_0.txt)
 #pragma once
 
 #include <assert.h>
@@ -475,7 +480,7 @@ struct channel_reader {
       auto context = Context::get_context(node->data);
       context(node, node->value, node->closed);
     };
-    node.data = &context.f().value();
+    node.data = &context.variables();
     node.pdone = nullptr;
     ptr->read(&node);
   }
@@ -488,7 +493,7 @@ struct channel_reader {
       auto context = Context::get_context(node->data);
       context(node, detail::void_holder{&node->value}, node->closed);
     };
-    node.data = &context.f().value();
+    node.data = &context.variables();
     node.success = false;
     node.pdone = &s.done;
     ptr->read(&node);
@@ -532,7 +537,7 @@ struct channel_writer {
       context(node, node->closed);
     };
 
-    node.data = &context.f().value();
+    node.data = &context.variables();
     node.pdone = nullptr;
     ptr->write(&node);
   }
@@ -547,7 +552,7 @@ struct channel_writer {
       context(node, detail::void_holder{&node->value}, node->closed);
     };
 
-    node.data = &context.f().value();
+    node.data = &context.variables();
     node.pdone = &s.done;
     node.success = false;
     ptr->write(&node);
